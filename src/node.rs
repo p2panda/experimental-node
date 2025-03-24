@@ -1,18 +1,21 @@
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures_util::future::{MapErr, Shared};
 use futures_util::{FutureExt, TryFutureExt};
 use iroh_io::AsyncSliceReader;
 use p2panda_blobs::{Blobs, DownloadBlobEvent, FilesystemStore as BlobsStore, ImportBlobEvent};
-use p2panda_core::{Body, Hash, Header, PrivateKey, PublicKey};
+use p2panda_core::{Body, Extension, Extensions, Hash, Header, PrivateKey, PruneFlag, PublicKey};
 use p2panda_discovery::mdns::LocalDiscovery;
-use p2panda_net::{network, Network, NetworkBuilder, NetworkId, RelayUrl, SyncConfiguration, SystemEvent, TopicId};
-use p2panda_store::MemoryStore;
-use p2panda_sync::log_sync::{LogSyncProtocol, TopicLogMap};
+use p2panda_net::{
+    Network, NetworkBuilder, NetworkId, RelayUrl, SyncConfiguration, SystemEvent, TopicId,
+};
+use p2panda_store::{LogId, MemoryStore};
 use p2panda_sync::TopicQuery;
-use serde::Serialize;
+use p2panda_sync::log_sync::{LogSyncProtocol, TopicLogMap};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::pin;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -23,37 +26,44 @@ use tracing::error;
 
 use super::{
     actor::{NodeActor, ToNodeActor},
-    extensions::{Extensions, LogId},
     operation::encode_gossip_message,
     stream::{StreamController, StreamControllerError, StreamEvent, ToStreamController},
 };
 
-pub struct Node<T> {
+pub struct Node<T, L, E, M> {
     pub private_key: PrivateKey,
-    pub store: MemoryStore<LogId, Extensions>,
+    pub store: MemoryStore<L, E>,
     pub network: Network<T>,
     blobs: Blobs<T, BlobsStore>,
     #[allow(dead_code)]
-    stream: StreamController,
-    stream_tx: mpsc::Sender<ToStreamController>,
+    stream: StreamController<L, E, M>,
+    stream_tx: mpsc::Sender<ToStreamController<L, E>>,
     network_actor_tx: mpsc::Sender<ToNodeActor<T>>,
     #[allow(dead_code)]
     actor_handle: Shared<MapErr<AbortOnDropHandle<()>, JoinErrToStr>>,
+    _phantom: PhantomData<M>,
 }
 
-impl<T> Node<T>
+impl<T, L, E, M> Node<T, L, E, M>
 where
     T: TopicId + TopicQuery + 'static,
+    L: LogId + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    E: Extensions + Extension<L> + Extension<PruneFlag> + Send + Sync + 'static,
+    M: From<Header<E>> + Serialize + Send + Sync + 'static,
 {
-    pub async fn new<TM: TopicLogMap<T, LogId> + 'static>(
+    pub async fn new<TM: TopicLogMap<T, L> + 'static>(
         network_name: String,
         private_key: PrivateKey,
         bootstrap_node_id: Option<PublicKey>,
         relay_url: Option<RelayUrl>,
-        store: MemoryStore<LogId, Extensions>,
+        store: MemoryStore<L, E>,
         blobs_root_dir: PathBuf,
         topic_map: TM,
-    ) -> Result<(Self, mpsc::Receiver<StreamEvent>, broadcast::Receiver<SystemEvent<T>>)> {
+    ) -> Result<(
+        Self,
+        mpsc::Receiver<StreamEvent<E, M>>,
+        broadcast::Receiver<SystemEvent<T>>,
+    )> {
         let network_id: NetworkId = Hash::new(network_name).into();
 
         let rt = tokio::runtime::Handle::current();
@@ -68,7 +78,11 @@ where
             rt.spawn(async move {
                 while let Some((header, body, header_bytes)) = network_rx.recv().await {
                     stream_tx
-                        .send(ToStreamController::Ingest { header, body, header_bytes })
+                        .send(ToStreamController::Ingest {
+                            header,
+                            body,
+                            header_bytes,
+                        })
                         .await
                         .expect("send stream_tx");
                 }
@@ -98,7 +112,10 @@ where
             .private_key(private_key.clone());
 
         if let Some(bootstrap_node_id) = bootstrap_node_id {
-            println!("P2Panda: Direct address provided for peer: {}", bootstrap_node_id);
+            println!(
+                "P2Panda: Direct address provided for peer: {}",
+                bootstrap_node_id
+            );
             network_builder = network_builder.direct_address(bootstrap_node_id, vec![], relay_url);
         } else {
             // I am probably the bootstrap node since I know of no others
@@ -134,6 +151,7 @@ where
                 stream_tx,
                 network_actor_tx,
                 actor_handle: actor_drop_handle,
+                _phantom: PhantomData::default(),
             },
             stream_rx,
             system_events_rx,
@@ -154,17 +172,27 @@ where
     }
 
     /// Send all unacknowledged operations again on the stream which belong to these logs.
-    pub async fn replay(&mut self, logs: HashMap<PublicKey, Vec<LogId>>) -> Result<(), StreamControllerError> {
+    pub async fn replay(
+        &mut self,
+        logs: HashMap<PublicKey, Vec<L>>,
+    ) -> Result<(), StreamControllerError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.stream_tx
-            .send(ToStreamController::Replay { logs, reply: reply_tx })
+            .send(ToStreamController::Replay {
+                logs,
+                reply: reply_tx,
+            })
             .await
             .expect("send stream_tx");
         reply_rx.await.expect("receive reply_rx")
     }
 
     /// Ingest an operation without publishing it.
-    pub async fn ingest(&mut self, header: &Header<Extensions>, body: Option<&Body>) -> Result<(), PublishError> {
+    pub async fn ingest(
+        &mut self,
+        header: &Header<E>,
+        body: Option<&Body>,
+    ) -> Result<(), PublishError> {
         let header_bytes = header.to_bytes();
 
         self.stream_tx
@@ -180,7 +208,11 @@ where
         Ok(())
     }
 
-    pub async fn publish_ephemeral(&mut self, topic: &T, payload: &[u8]) -> Result<(), PublishError> {
+    pub async fn publish_ephemeral(
+        &mut self,
+        topic: &T,
+        payload: &[u8],
+    ) -> Result<(), PublishError> {
         self.network_actor_tx
             .send(ToNodeActor::Broadcast {
                 topic_id: topic.id(),
@@ -192,7 +224,12 @@ where
         Ok(())
     }
 
-    pub async fn publish_to_stream(&mut self, topic: &T, header: &Header<Extensions>, body: Option<&Body>) -> Result<Hash, PublishError> {
+    pub async fn publish_to_stream(
+        &mut self,
+        topic: &T,
+        header: &Header<E>,
+        body: Option<&Body>,
+    ) -> Result<Hash, PublishError> {
         let operation_id = header.hash();
 
         let bytes = encode_gossip_message(header, body)?;
@@ -203,7 +240,10 @@ where
             .unwrap();
 
         self.network_actor_tx
-            .send(ToNodeActor::Broadcast { topic_id: topic.id(), bytes })
+            .send(ToNodeActor::Broadcast {
+                topic_id: topic.id(),
+                bytes,
+            })
             .await
             // @TODO: Handle error.
             .unwrap();
@@ -213,14 +253,18 @@ where
 
     pub async fn subscribe_processed(&self, topic: &T) -> Result<()> {
         self.network_actor_tx
-            .send(ToNodeActor::SubscribeProcessed { topic: topic.clone() })
+            .send(ToNodeActor::SubscribeProcessed {
+                topic: topic.clone(),
+            })
             .await?;
         Ok(())
     }
 
     pub async fn subscribe_ephemeral(&self, topic: &T) -> Result<()> {
         self.network_actor_tx
-            .send(ToNodeActor::Subscribe { topic: topic.clone() })
+            .send(ToNodeActor::Subscribe {
+                topic: topic.clone(),
+            })
             .await?;
         Ok(())
     }

@@ -1,28 +1,31 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
-use p2panda_core::{Body, Extension, Hash, Header, PublicKey};
+use p2panda_core::{Body, Extension, Extensions, Hash, Header, PruneFlag, PublicKey};
 use p2panda_store::{LogStore, MemoryStore, OperationStore};
 use p2panda_stream::IngestExt;
-use serde::ser::SerializeStruct;
 use serde::Serialize;
+use serde::ser::SerializeStruct;
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::debug;
 
-use super::extensions::{Extensions, LogId, LogPath, Stream, StreamOwner, StreamRootHash};
+use crate::extensions::{LogId, NodeExtensions};
+
+// use super::extensions::{Extensions, LogId, LogPath, Stream, StreamOwner, StreamRootHash};
 
 #[allow(clippy::large_enum_variant, dead_code)]
-pub enum ToStreamController {
+pub enum ToStreamController<L, E> {
     Ephemeral {
         bytes: Vec<u8>,
     },
     Ingest {
-        header: Header<Extensions>,
+        header: Header<E>,
         body: Option<Body>,
         header_bytes: Vec<u8>,
     },
@@ -31,20 +34,32 @@ pub enum ToStreamController {
         reply: oneshot::Sender<Result<(), StreamControllerError>>,
     },
     Replay {
-        logs: HashMap<PublicKey, Vec<LogId>>,
+        logs: HashMap<PublicKey, Vec<L>>,
         reply: oneshot::Sender<Result<(), StreamControllerError>>,
     },
 }
 
 #[allow(dead_code)]
-pub struct StreamController {
-    controller_store: StreamMemoryStore<LogId, Extensions>,
-    operation_store: MemoryStore<LogId, Extensions>,
+pub struct StreamController<L, E, M> {
+    controller_store: StreamMemoryStore<L, E>,
+    operation_store: MemoryStore<L, E>,
     processor_handle: JoinHandle<()>,
+    _phantom: PhantomData<M>,
 }
 
-impl StreamController {
-    pub fn new(operation_store: MemoryStore<LogId, Extensions>) -> (Self, mpsc::Sender<ToStreamController>, mpsc::Receiver<StreamEvent>) {
+impl<L, E, M> StreamController<L, E, M>
+where
+    L: p2panda_store::LogId + Send + Sync + 'static,
+    E: Extensions + Extension<L> + Extension<PruneFlag> + Send + Sync + 'static,
+    M: From<Header<E>> + Send + Sync + Serialize + 'static,
+{
+    pub fn new(
+        operation_store: MemoryStore<L, E>,
+    ) -> (
+        Self,
+        mpsc::Sender<ToStreamController<L, E>>,
+        mpsc::Receiver<StreamEvent<E, M>>,
+    ) {
         let rt = tokio::runtime::Handle::current();
 
         let controller_store = StreamMemoryStore::new(operation_store.clone());
@@ -69,29 +84,38 @@ impl StreamController {
                                 .await
                                 .expect("send on app_tx");
                         }
-                        Some(ToStreamController::Ingest { header, body, header_bytes }) => processor_tx
+                        Some(ToStreamController::Ingest {
+                            header,
+                            body,
+                            header_bytes,
+                        }) => processor_tx
                             .send((header, body, header_bytes))
                             .await
                             .expect("send processor_tx"),
-                        Some(ToStreamController::Ack { operation_id, reply }) => {
+                        Some(ToStreamController::Ack {
+                            operation_id,
+                            reply,
+                        }) => {
                             let result = controller_store.ack(operation_id).await;
                             reply.send(result).ok();
                         }
-                        Some(ToStreamController::Replay { logs, reply }) => match controller_store.unacked(logs).await {
-                            Ok(operations) => {
-                                for operation in operations {
-                                    debug!("send operation: {}", &operation.0.hash());
-                                    processor_tx
-                                        .send(operation)
-                                        .await
-                                        .expect("send processor_tx");
+                        Some(ToStreamController::Replay { logs, reply }) => {
+                            match controller_store.unacked(logs).await {
+                                Ok(operations) => {
+                                    for operation in operations {
+                                        debug!("send operation: {}", &operation.0.hash());
+                                        processor_tx
+                                            .send(operation)
+                                            .await
+                                            .expect("send processor_tx");
+                                    }
+                                    reply.send(Ok(())).ok();
                                 }
-                                reply.send(Ok(())).ok();
+                                Err(err) => {
+                                    reply.send(Err(err)).ok();
+                                }
                             }
-                            Err(err) => {
-                                reply.send(Err(err)).ok();
-                            }
-                        },
+                        }
                         None => break,
                     }
                 }
@@ -102,25 +126,26 @@ impl StreamController {
             let operation_store = operation_store.clone();
 
             rt.spawn(async move {
-                let mut processor = processor_rx
-                    .ingest(operation_store, 512)
-                    .filter_map(|result| match result {
-                        Ok(operation) => Some(operation),
-                        Err(_err) => {
-                            // @TODO(adz): Which errors do we want to report to the application and
-                            // which not? It might become pretty spammy in some cases and I'm not sure
-                            // if the frontend can do anything about it?
+                let mut processor =
+                    processor_rx
+                        .ingest(operation_store, 512)
+                        .filter_map(|result| match result {
+                            Ok(operation) => Some(operation),
+                            Err(_err) => {
+                                // @TODO(adz): Which errors do we want to report to the application and
+                                // which not? It might become pretty spammy in some cases and I'm not sure
+                                // if the frontend can do anything about it?
 
-                            // app_tx
-                            //     .blocking_send(StreamEvent::from_error(
-                            //         StreamError::IngestError(err),
-                            //         // @TODO: We should be able to get the operation causing the error.
-                            //         result.header,
-                            //     ))
-                            //     .expect("app_tx send");
-                            None
-                        }
-                    });
+                                // app_tx
+                                //     .blocking_send(StreamEvent::from_error(
+                                //         StreamError::IngestError(err),
+                                //         // @TODO: We should be able to get the operation causing the error.
+                                //         result.header,
+                                //     ))
+                                //     .expect("app_tx send");
+                                None
+                            }
+                        });
 
                 loop {
                     match processor.next().await {
@@ -149,6 +174,7 @@ impl StreamController {
                 controller_store,
                 operation_store,
                 processor_handle,
+                _phantom: PhantomData::default(),
             },
             stream_tx,
             app_rx,
@@ -157,18 +183,23 @@ impl StreamController {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct StreamEvent {
-    pub meta: Option<EventMeta>,
+pub struct StreamEvent<E, M> {
+    pub meta: Option<M>,
     pub data: EventData,
+    _phantom: PhantomData<E>,
 }
 
-impl StreamEvent {
-    pub fn from_operation(header: Header<Extensions>, body: Body) -> Self {
+impl<E, M> StreamEvent<E, M>
+where
+    M: From<Header<E>> + Serialize,
+{
+    pub fn from_operation(header: Header<E>, body: Body) -> Self {
         let json = serde_json::from_slice(&body.to_bytes()).unwrap();
 
         Self {
             meta: Some(header.into()),
             data: EventData::Application(json),
+            _phantom: PhantomData::default(),
         }
     }
 
@@ -178,72 +209,16 @@ impl StreamEvent {
         Self {
             meta: None,
             data: EventData::Ephemeral(json),
+            _phantom: PhantomData::default(),
         }
     }
 
     #[allow(dead_code)]
-    pub fn from_error(error: StreamError, header: Header<Extensions>) -> Self {
+    pub fn from_error(error: StreamError, header: Header<E>) -> Self {
         Self {
             meta: Some(header.into()),
             data: EventData::Error(error),
-        }
-    }
-}
-
-impl Serialize for StreamEvent {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut state = serializer.serialize_struct("StreamEvent", 3)?;
-        state.serialize_field("event", &self.data.tag())?;
-        state.serialize_field("meta", &self.meta)?;
-        state.serialize_field("data", &self.data)?;
-        state.end()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamMeta {
-    pub(crate) id: Hash,
-    pub(crate) root_hash: StreamRootHash,
-    pub(crate) owner: StreamOwner,
-}
-
-impl From<Stream> for StreamMeta {
-    fn from(stream: Stream) -> Self {
-        StreamMeta {
-            id: stream.id(),
-            root_hash: stream.root_hash,
-            owner: stream.owner,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EventMeta {
-    pub operation_id: Hash,
-    pub author: PublicKey,
-    pub stream: StreamMeta,
-    pub log_path: Option<LogPath>,
-}
-
-impl From<Header<Extensions>> for EventMeta {
-    fn from(header: Header<Extensions>) -> Self {
-        let stream: Stream = header
-            .extension()
-            .expect("extract stream id extensions");
-        let log_id: LogId = header
-            .extension()
-            .expect("extract log id extensions");
-
-        Self {
-            operation_id: header.hash(),
-            author: header.public_key,
-            stream: stream.into(),
-            log_path: log_id.log_path,
+            _phantom: PhantomData::default(),
         }
     }
 }
@@ -255,16 +230,6 @@ pub enum EventData {
     Application(serde_json::Value),
     Ephemeral(serde_json::Value),
     Error(StreamError),
-}
-
-impl EventData {
-    fn tag(&self) -> &'static str {
-        match self {
-            EventData::Application(_) => "application",
-            EventData::Ephemeral(_) => "ephemeral",
-            EventData::Error(_) => "error",
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -319,7 +284,10 @@ where
     fn ack(&self, operation_id: Hash) -> impl Future<Output = Result<(), Self::Error>>;
 
     /// Return all operations from given logs which have not yet been acknowledged.
-    fn unacked(&self, logs: HashMap<PublicKey, Vec<L>>) -> impl Future<Output = Result<Vec<Operation<E>>, Self::Error>>;
+    fn unacked(
+        &self,
+        logs: HashMap<PublicKey, Vec<L>>,
+    ) -> impl Future<Output = Result<Vec<Operation<E>>, Self::Error>>;
 }
 
 #[derive(Clone, Debug)]
@@ -347,11 +315,7 @@ where
     type Error = StreamControllerError;
 
     async fn ack(&self, operation_id: Hash) -> Result<(), Self::Error> {
-        let Ok(Some((header, _))) = self
-            .operation_store
-            .get_operation(operation_id)
-            .await
-        else {
+        let Ok(Some((header, _))) = self.operation_store.get_operation(operation_id).await else {
             return Err(StreamControllerError::AckedUnknownOperation(operation_id));
         };
 
@@ -368,7 +332,10 @@ where
         Ok(())
     }
 
-    async fn unacked(&self, logs: HashMap<PublicKey, Vec<L>>) -> Result<Vec<Operation<E>>, Self::Error> {
+    async fn unacked(
+        &self,
+        logs: HashMap<PublicKey, Vec<L>>,
+    ) -> Result<Vec<Operation<E>>, Self::Error> {
         let acked = self.acked.read().await;
 
         let mut result = Vec::new();
@@ -427,29 +394,26 @@ mod tests {
     use serde_json::json;
     use tokio::sync::oneshot;
 
-    use crate::extensions::{Extensions, LogId, LogPath, StreamOwner, StreamRootHash};
+    use crate::extensions::{EventMeta, LogId, NodeExtensions};
     use crate::operation::{self};
     use crate::stream::StreamEvent;
 
     use super::{StreamController, ToStreamController};
 
     async fn create_operation(
-        operation_store: &mut MemoryStore<LogId, Extensions>,
+        operation_store: &mut MemoryStore<LogId, NodeExtensions>,
         private_key: &PrivateKey,
-        log_path: Option<LogPath>,
-        stream_root_hash: Option<StreamRootHash>,
-        stream_owner: Option<StreamOwner>,
-    ) -> (Header<Extensions>, Body, Vec<u8>, Hash) {
-        let extensions = Extensions {
-            stream_root_hash,
-            stream_owner,
-            log_path,
+        log_id: Option<LogId>,
+    ) -> (Header<NodeExtensions>, Body, Vec<u8>, Hash) {
+        let extensions = NodeExtensions {
+            log_id: log_id.clone(),
             prune_flag: PruneFlag::default(),
         };
 
         let (header, body) = operation::create_operation(
             operation_store,
             private_key,
+            log_id.as_ref(),
             extensions.clone(),
             Some(
                 &serde_json::to_vec(&json!({
@@ -469,13 +433,15 @@ mod tests {
     async fn replay_unacked_operations() {
         let mut operation_store = MemoryStore::new();
 
-        let (_controller, tx, mut rx) = StreamController::new(operation_store.clone());
+        let (_controller, tx, mut rx) =
+            StreamController::<LogId, NodeExtensions, EventMeta>::new(operation_store.clone());
 
         let private_key = PrivateKey::new();
         let public_key = private_key.public_key();
 
         // Create and ingest operation 0.
-        let (header_0, body_0, header_bytes_0, operation_id_0) = create_operation(&mut operation_store, &private_key, None, None, None).await;
+        let (header_0, body_0, header_bytes_0, operation_id_0) =
+            create_operation(&mut operation_store, &private_key, None).await;
 
         tx.send(ToStreamController::Ingest {
             header: header_0.clone(),
@@ -484,7 +450,10 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(rx.recv().await.unwrap(), StreamEvent::from_operation(header_0.clone(), body_0));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            StreamEvent::from_operation(header_0.clone(), body_0)
+        );
 
         // Acknowledge operation 0.
         let (reply, reply_rx) = oneshot::channel();
@@ -508,14 +477,8 @@ mod tests {
         assert_eq!(rx.recv().now_or_never(), None);
 
         // Create and ingest operation 1.
-        let (header_1, body_1, header_bytes_1, operation_id_1) = create_operation(
-            &mut operation_store,
-            &private_key,
-            header_0.extension(),
-            header_0.extension(),
-            header_0.extension(),
-        )
-        .await;
+        let (header_1, body_1, header_bytes_1, operation_id_1) =
+            create_operation(&mut operation_store, &private_key, header_0.extension()).await;
 
         tx.send(ToStreamController::Ingest {
             header: header_1.clone(),
@@ -524,17 +487,14 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(rx.recv().await.unwrap(), StreamEvent::from_operation(header_1.clone(), body_1.clone()));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            StreamEvent::from_operation(header_1.clone(), body_1.clone())
+        );
 
         // Create and ingest operation 2.
-        let (header_2, body_2, header_bytes_2, operation_id_2) = create_operation(
-            &mut operation_store,
-            &private_key,
-            header_0.extension(),
-            header_0.extension(),
-            header_0.extension(),
-        )
-        .await;
+        let (header_2, body_2, header_bytes_2, operation_id_2) =
+            create_operation(&mut operation_store, &private_key, header_0.extension()).await;
 
         tx.send(ToStreamController::Ingest {
             header: header_2.clone(),
@@ -543,7 +503,10 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(rx.recv().await.unwrap(), StreamEvent::from_operation(header_2.clone(), body_2.clone()));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            StreamEvent::from_operation(header_2.clone(), body_2.clone())
+        );
 
         // Ask to replay log, expect operation 1 and 2 to be sent again.
         let (reply, reply_rx) = oneshot::channel();
@@ -554,8 +517,14 @@ mod tests {
         .await
         .unwrap();
         assert!(reply_rx.await.is_ok());
-        assert_eq!(rx.recv().await.unwrap(), StreamEvent::from_operation(header_1, body_1));
-        assert_eq!(rx.recv().await.unwrap(), StreamEvent::from_operation(header_2, body_2));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            StreamEvent::from_operation(header_1, body_1)
+        );
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            StreamEvent::from_operation(header_2, body_2)
+        );
 
         // Acknowledge operation 1 and 2.
         let (reply, reply_rx) = oneshot::channel();

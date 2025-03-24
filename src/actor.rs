@@ -1,16 +1,15 @@
 use std::collections::HashMap;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures_util::stream::SelectAll;
-use p2panda_core::{cbor::decode_cbor, Body, Header};
+use p2panda_core::{Body, Extensions, Header, cbor::decode_cbor};
 use p2panda_net::{FromNetwork, Network, ToNetwork, TopicId};
 use p2panda_sync::TopicQuery;
 use tokio::sync::{mpsc, oneshot};
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, trace, warn};
 
-use super::extensions::Extensions;
 use super::operation::decode_gossip_message;
 
 pub enum ToNodeActor<T> {
@@ -30,19 +29,23 @@ pub enum ToNodeActor<T> {
     },
 }
 
-pub struct NodeActor<T> {
+pub struct NodeActor<T, E> {
     pub network: Network<T>,
     inbox: mpsc::Receiver<ToNodeActor<T>>,
     topic_rx: SelectAll<ReceiverStream<FromNetwork>>,
     topic_tx: HashMap<[u8; 32], mpsc::Sender<ToNetwork>>,
-    stream_processor_tx: mpsc::Sender<(Header<Extensions>, Option<Body>, Vec<u8>)>,
+    stream_processor_tx: mpsc::Sender<(Header<E>, Option<Body>, Vec<u8>)>,
     ephemeral_tx: mpsc::Sender<Vec<u8>>,
 }
 
-impl<T: TopicId + TopicQuery + 'static> NodeActor<T> {
+impl<T, E> NodeActor<T, E>
+where
+    T: TopicId + TopicQuery + 'static,
+    E: Extensions + Send + Sync + 'static,
+{
     pub fn new(
         network: Network<T>,
-        stream_processor_tx: mpsc::Sender<(Header<Extensions>, Option<Body>, Vec<u8>)>,
+        stream_processor_tx: mpsc::Sender<(Header<E>, Option<Body>, Vec<u8>)>,
         ephemeral_tx: mpsc::Sender<Vec<u8>>,
         inbox: mpsc::Receiver<ToNodeActor<T>>,
     ) -> Self {
@@ -138,7 +141,11 @@ impl<T: TopicId + TopicQuery + 'static> NodeActor<T> {
     async fn on_network_event(&mut self, event: FromNetwork) -> Result<()> {
         let (header_bytes, body_bytes) = match event {
             FromNetwork::GossipMessage { bytes, .. } => {
-                trace!(source = "gossip", bytes = bytes.len(), "received network message");
+                trace!(
+                    source = "gossip",
+                    bytes = bytes.len(),
+                    "received network message"
+                );
                 match decode_gossip_message(&bytes) {
                     Ok(result) => result,
                     Err(_err) => {
