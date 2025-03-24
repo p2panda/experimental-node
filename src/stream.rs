@@ -194,21 +194,17 @@ where
     M: From<Header<E>> + Serialize,
 {
     pub fn from_operation(header: Header<E>, body: Body) -> Self {
-        let json = serde_json::from_slice(&body.to_bytes()).unwrap();
-
         Self {
             meta: Some(header.into()),
-            data: EventData::Application(json),
+            data: EventData::Application(body.to_bytes()),
             _phantom: PhantomData::default(),
         }
     }
 
     pub fn from_bytes(payload: Vec<u8>) -> Self {
-        let json = serde_json::from_slice(&payload).unwrap();
-
         Self {
             meta: None,
-            data: EventData::Ephemeral(json),
+            data: EventData::Ephemeral(payload),
             _phantom: PhantomData::default(),
         }
     }
@@ -227,8 +223,8 @@ where
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum EventData {
-    Application(serde_json::Value),
-    Ephemeral(serde_json::Value),
+    Application(Vec<u8>),
+    Ephemeral(Vec<u8>),
     Error(StreamError),
 }
 
@@ -391,7 +387,6 @@ mod tests {
     use futures_util::FutureExt;
     use p2panda_core::{Body, Hash, Header, PrivateKey, PruneFlag};
     use p2panda_store::MemoryStore;
-    use serde_json::json;
     use tokio::sync::oneshot;
 
     use crate::extensions::{EventMeta, LogId, NodeExtensions};
@@ -415,12 +410,7 @@ mod tests {
             private_key,
             log_id.as_ref(),
             extensions.clone(),
-            Some(
-                &serde_json::to_vec(&json!({
-                    "message": "organize!"
-                }))
-                .unwrap(),
-            ),
+            Some(&[0, 1, 2, 3]),
         )
         .await;
         let header_bytes = header.to_bytes();
