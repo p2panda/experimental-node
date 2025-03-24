@@ -45,7 +45,7 @@ impl Serialize for ChannelEvent {
                     state.end()
                 }
             },
-            ChannelEvent::NetworkEvent(ref event) => {
+            ChannelEvent::NetworkEvent(event) => {
                 let mut state = serializer.serialize_struct("StreamEvent", 2)?;
                 state.serialize_field("event", "network_event")?;
                 state.serialize_field("data", event)?;

@@ -5,7 +5,6 @@ use std::sync::Arc;
 use p2panda_core::{Body, Extension, Hash, Header, PublicKey};
 use p2panda_store::{LogStore, MemoryStore, OperationStore};
 use p2panda_stream::IngestExt;
-use rocket::tokio;
 use serde::ser::SerializeStruct;
 use serde::Serialize;
 use thiserror::Error;
@@ -425,13 +424,12 @@ mod tests {
     use futures_util::FutureExt;
     use p2panda_core::{Body, Hash, Header, PrivateKey, PruneFlag};
     use p2panda_store::MemoryStore;
-    use rocket::tokio;
     use serde_json::json;
     use tokio::sync::oneshot;
 
-    use crate::toolkitty_node::extensions::{Extensions, LogId, LogPath, StreamOwner, StreamRootHash};
-    use crate::toolkitty_node::operation::{self};
-    use crate::toolkitty_node::stream::StreamEvent;
+    use crate::extensions::{Extensions, LogId, LogPath, StreamOwner, StreamRootHash};
+    use crate::operation::{self};
+    use crate::stream::StreamEvent;
 
     use super::{StreamController, ToStreamController};
 

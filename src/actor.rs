@@ -5,7 +5,6 @@ use futures_util::stream::SelectAll;
 use p2panda_core::{cbor::decode_cbor, Body, Header};
 use p2panda_net::{FromNetwork, Network, ToNetwork, TopicId};
 use p2panda_sync::TopicQuery;
-use rocket::tokio;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;

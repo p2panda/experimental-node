@@ -12,7 +12,6 @@ use p2panda_net::{network, Network, NetworkBuilder, NetworkId, RelayUrl, SyncCon
 use p2panda_store::MemoryStore;
 use p2panda_sync::log_sync::{LogSyncProtocol, TopicLogMap};
 use p2panda_sync::TopicQuery;
-use rocket::tokio;
 use serde::Serialize;
 use thiserror::Error;
 use tokio::pin;

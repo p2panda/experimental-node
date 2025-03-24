@@ -7,7 +7,6 @@ use p2panda_core::{cbor, Hash, PublicKey};
 use p2panda_net::TopicId;
 use p2panda_sync::log_sync::TopicLogMap;
 use p2panda_sync::TopicQuery;
-use rocket::tokio;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
