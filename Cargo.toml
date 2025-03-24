@@ -3,6 +3,9 @@ name = "experimental-node"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "p2panda_node"
+
 [dependencies]
 anyhow = "1.0.95"
 async-trait = "0.1.85"
