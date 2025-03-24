@@ -23,8 +23,6 @@ where
         .expect("time from operation system")
         .as_secs();
 
-    // Attempt to extract a LogId from the passed extensions, if this fails it means this is the
-    // first operation in a new stream (and therefore log).
     let (seq_num, backlink) = match log_id {
         Some(log_id) => {
             let Ok(latest_operation) = store.latest_operation(&public_key, log_id).await;
