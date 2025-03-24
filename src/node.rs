@@ -151,7 +151,7 @@ where
                 stream_tx,
                 network_actor_tx,
                 actor_handle: actor_drop_handle,
-                _phantom: PhantomData::default(),
+                _phantom: PhantomData,
             },
             stream_rx,
             system_events_rx,

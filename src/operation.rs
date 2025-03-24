@@ -27,7 +27,7 @@ where
     // first operation in a new stream (and therefore log).
     let (seq_num, backlink) = match log_id {
         Some(log_id) => {
-            let Ok(latest_operation) = store.latest_operation(&public_key, &log_id).await;
+            let Ok(latest_operation) = store.latest_operation(&public_key, log_id).await;
             match latest_operation {
                 Some((header, _)) => (header.seq_num + 1, Some(header.hash())),
                 None => (0, None),

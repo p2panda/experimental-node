@@ -53,6 +53,12 @@ struct InnerTopicMap {
 
 type AuthorLogs = HashMap<PublicKey, Vec<LogId>>;
 
+impl Default for TopicMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TopicMap {
     pub fn new() -> Self {
         Self {

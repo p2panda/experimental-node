@@ -7,15 +7,12 @@ use p2panda_core::{Body, Extension, Extensions, Hash, Header, PruneFlag, PublicK
 use p2panda_store::{LogStore, MemoryStore, OperationStore};
 use p2panda_stream::IngestExt;
 use serde::Serialize;
-use serde::ser::SerializeStruct;
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::debug;
-
-use crate::extensions::{LogId, NodeExtensions};
 
 // use super::extensions::{Extensions, LogId, LogPath, Stream, StreamOwner, StreamRootHash};
 
@@ -47,19 +44,19 @@ pub struct StreamController<L, E, M> {
     _phantom: PhantomData<M>,
 }
 
+pub type StreamReturn<L, E, M> = (
+    StreamController<L, E, M>,
+    mpsc::Sender<ToStreamController<L, E>>,
+    mpsc::Receiver<StreamEvent<E, M>>,
+);
+
 impl<L, E, M> StreamController<L, E, M>
 where
     L: p2panda_store::LogId + Send + Sync + 'static,
     E: Extensions + Extension<L> + Extension<PruneFlag> + Send + Sync + 'static,
     M: From<Header<E>> + Send + Sync + Serialize + 'static,
 {
-    pub fn new(
-        operation_store: MemoryStore<L, E>,
-    ) -> (
-        Self,
-        mpsc::Sender<ToStreamController<L, E>>,
-        mpsc::Receiver<StreamEvent<E, M>>,
-    ) {
+    pub fn new(operation_store: MemoryStore<L, E>) -> StreamReturn<L, E, M> {
         let rt = tokio::runtime::Handle::current();
 
         let controller_store = StreamMemoryStore::new(operation_store.clone());
@@ -174,7 +171,7 @@ where
                 controller_store,
                 operation_store,
                 processor_handle,
-                _phantom: PhantomData::default(),
+                _phantom: PhantomData,
             },
             stream_tx,
             app_rx,
@@ -197,7 +194,7 @@ where
         Self {
             meta: Some(header.into()),
             data: EventData::Application(body.to_bytes()),
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 
@@ -205,7 +202,7 @@ where
         Self {
             meta: None,
             data: EventData::Ephemeral(payload),
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 
@@ -214,7 +211,7 @@ where
         Self {
             meta: Some(header.into()),
             data: EventData::Error(error),
-            _phantom: PhantomData::default(),
+            _phantom: PhantomData,
         }
     }
 }
