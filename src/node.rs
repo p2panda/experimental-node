@@ -224,7 +224,7 @@ where
         Ok(())
     }
 
-    pub async fn publish_to_stream(
+    pub async fn publish_persisted(
         &mut self,
         topic: &T,
         header: &Header<E>,
@@ -251,7 +251,7 @@ where
         Ok(operation_id)
     }
 
-    pub async fn subscribe_processed(&self, topic: &T) -> Result<()> {
+    pub async fn subscribe_persisted(&self, topic: &T) -> Result<()> {
         self.network_actor_tx
             .send(ToNodeActor::SubscribeProcessed {
                 topic: topic.clone(),

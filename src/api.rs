@@ -91,7 +91,7 @@ impl NodeApi {
             }
             Topic::Persisted(_) => {
                 self.node
-                    .subscribe_processed(topic)
+                    .subscribe_persisted(topic)
                     .await
                     .expect("can subscribe to topic");
             }
@@ -129,7 +129,7 @@ impl NodeApi {
             Some(topic) => {
                 let topic = Topic::Persisted(topic.to_string());
                 self.node
-                    .publish_to_stream(&topic, &header, body.as_ref())
+                    .publish_persisted(&topic, &header, body.as_ref())
                     .await?;
             }
             None => {
