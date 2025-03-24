@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::marker::PhantomData;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
@@ -30,26 +29,24 @@ use super::{
     stream::{StreamController, StreamControllerError, StreamEvent, ToStreamController},
 };
 
-pub struct Node<T, L, E, M> {
+pub struct Node<T, L, E> {
     pub private_key: PrivateKey,
     pub store: MemoryStore<L, E>,
     pub network: Network<T>,
     blobs: Blobs<T, BlobsStore>,
     #[allow(dead_code)]
-    stream: StreamController<L, E, M>,
+    stream: StreamController<L, E>,
     stream_tx: mpsc::Sender<ToStreamController<L, E>>,
     network_actor_tx: mpsc::Sender<ToNodeActor<T>>,
     #[allow(dead_code)]
     actor_handle: Shared<MapErr<AbortOnDropHandle<()>, JoinErrToStr>>,
-    _phantom: PhantomData<M>,
 }
 
-impl<T, L, E, M> Node<T, L, E, M>
+impl<T, L, E> Node<T, L, E>
 where
     T: TopicId + TopicQuery + 'static,
     L: LogId + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
     E: Extensions + Extension<L> + Extension<PruneFlag> + Send + Sync + 'static,
-    M: From<Header<E>> + Serialize + Send + Sync + 'static,
 {
     pub async fn new<TM: TopicLogMap<T, L> + 'static>(
         network_name: String,
@@ -61,7 +58,7 @@ where
         topic_map: TM,
     ) -> Result<(
         Self,
-        mpsc::Receiver<StreamEvent<E, M>>,
+        mpsc::Receiver<StreamEvent<E>>,
         broadcast::Receiver<SystemEvent<T>>,
     )> {
         let network_id: NetworkId = Hash::new(network_name).into();
@@ -151,7 +148,6 @@ where
                 stream_tx,
                 network_actor_tx,
                 actor_handle: actor_drop_handle,
-                _phantom: PhantomData,
             },
             stream_rx,
             system_events_rx,

@@ -7,20 +7,20 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    extensions::{EventMeta, LogId, NodeExtensions},
+    extensions::{LogId, NodeExtensions},
     node::Node,
     operation::create_operation,
     topic::{Topic, TopicMap},
 };
 
 pub struct NodeApi {
-    pub node: Node<Topic, LogId, NodeExtensions, EventMeta>,
+    pub node: Node<Topic, LogId, NodeExtensions>,
     pub topic_map: TopicMap,
     pub subscriptions: HashMap<[u8; 32], Topic>,
 }
 
 impl NodeApi {
-    pub fn new(node: Node<Topic, LogId, NodeExtensions, EventMeta>) -> Self {
+    pub fn new(node: Node<Topic, LogId, NodeExtensions>) -> Self {
         Self {
             node,
             topic_map: TopicMap::new(),
@@ -182,7 +182,7 @@ mod tests {
 
     use crate::api::NodeApi;
 
-    use crate::extensions::{EventMeta, LogId, NodeExtensions};
+    use crate::extensions::{LogId, NodeExtensions};
     use crate::stream::EventData;
     use crate::topic::TopicMap;
 
@@ -223,15 +223,11 @@ mod tests {
 
         let expected_log_id = LogId(log_id.to_string());
         let event = stream_rx.recv().await.unwrap();
-        let EventMeta {
-            operation_id,
-            author,
-            log_id,
-        } = event.meta.unwrap();
+        let header = event.header.unwrap();
 
-        assert_eq!(author, node_private_key.public_key());
-        assert_eq!(operation_id, operation_hash);
-        assert_eq!(log_id, Some(expected_log_id));
+        assert_eq!(header.public_key, node_private_key.public_key());
+        assert_eq!(header.hash(), operation_hash);
+        assert_eq!(header.extension(), Some(expected_log_id));
 
         let EventData::Application(value) = event.data else {
             panic!();

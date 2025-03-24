@@ -1,6 +1,6 @@
 use std::hash::Hash as StdHash;
 
-use p2panda_core::{Extension, Hash, Header, PruneFlag, PublicKey};
+use p2panda_core::{Extension, Header, PruneFlag};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, StdHash, Serialize, Deserialize)]
@@ -36,24 +36,5 @@ impl Extension<PruneFlag> for NodeExtensions {
             .extensions
             .as_ref()
             .map(|extensions| extensions.prune_flag.clone())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct EventMeta {
-    pub operation_id: Hash,
-    pub author: PublicKey,
-    pub log_id: Option<LogId>,
-}
-
-impl From<Header<NodeExtensions>> for EventMeta {
-    fn from(header: Header<NodeExtensions>) -> Self {
-        let log_id: LogId = header.extension().expect("extract log id extensions");
-
-        Self {
-            operation_id: header.hash(),
-            author: header.public_key,
-            log_id: Some(log_id),
-        }
     }
 }

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::marker::PhantomData;
 use std::sync::Arc;
 
 use p2panda_core::{Body, Extension, Extensions, Hash, Header, PruneFlag, PublicKey};
@@ -37,26 +36,24 @@ pub enum ToStreamController<L, E> {
 }
 
 #[allow(dead_code)]
-pub struct StreamController<L, E, M> {
+pub struct StreamController<L, E> {
     controller_store: StreamMemoryStore<L, E>,
     operation_store: MemoryStore<L, E>,
     processor_handle: JoinHandle<()>,
-    _phantom: PhantomData<M>,
 }
 
-pub type StreamReturn<L, E, M> = (
-    StreamController<L, E, M>,
+pub type StreamReturn<L, E> = (
+    StreamController<L, E>,
     mpsc::Sender<ToStreamController<L, E>>,
-    mpsc::Receiver<StreamEvent<E, M>>,
+    mpsc::Receiver<StreamEvent<E>>,
 );
 
-impl<L, E, M> StreamController<L, E, M>
+impl<L, E> StreamController<L, E>
 where
     L: p2panda_store::LogId + Send + Sync + 'static,
     E: Extensions + Extension<L> + Extension<PruneFlag> + Send + Sync + 'static,
-    M: From<Header<E>> + Send + Sync + Serialize + 'static,
 {
-    pub fn new(operation_store: MemoryStore<L, E>) -> StreamReturn<L, E, M> {
+    pub fn new(operation_store: MemoryStore<L, E>) -> StreamReturn<L, E> {
         let rt = tokio::runtime::Handle::current();
 
         let controller_store = StreamMemoryStore::new(operation_store.clone());
@@ -171,7 +168,6 @@ where
                 controller_store,
                 operation_store,
                 processor_handle,
-                _phantom: PhantomData,
             },
             stream_tx,
             app_rx,
@@ -180,38 +176,31 @@ where
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct StreamEvent<E, M> {
-    pub meta: Option<M>,
+pub struct StreamEvent<E> {
+    pub header: Option<Header<E>>,
     pub data: EventData,
-    _phantom: PhantomData<E>,
 }
 
-impl<E, M> StreamEvent<E, M>
-where
-    M: From<Header<E>> + Serialize,
-{
+impl<E> StreamEvent<E> {
     pub fn from_operation(header: Header<E>, body: Body) -> Self {
         Self {
-            meta: Some(header.into()),
+            header: Some(header),
             data: EventData::Application(body.to_bytes()),
-            _phantom: PhantomData,
         }
     }
 
     pub fn from_bytes(payload: Vec<u8>) -> Self {
         Self {
-            meta: None,
+            header: None,
             data: EventData::Ephemeral(payload),
-            _phantom: PhantomData,
         }
     }
 
     #[allow(dead_code)]
     pub fn from_error(error: StreamError, header: Header<E>) -> Self {
         Self {
-            meta: Some(header.into()),
+            header: Some(header),
             data: EventData::Error(error),
-            _phantom: PhantomData,
         }
     }
 }
@@ -386,7 +375,7 @@ mod tests {
     use p2panda_store::MemoryStore;
     use tokio::sync::oneshot;
 
-    use crate::extensions::{EventMeta, LogId, NodeExtensions};
+    use crate::extensions::{LogId, NodeExtensions};
     use crate::operation::{self};
     use crate::stream::StreamEvent;
 
@@ -421,7 +410,7 @@ mod tests {
         let mut operation_store = MemoryStore::new();
 
         let (_controller, tx, mut rx) =
-            StreamController::<LogId, NodeExtensions, EventMeta>::new(operation_store.clone());
+            StreamController::<LogId, NodeExtensions>::new(operation_store.clone());
 
         let private_key = PrivateKey::new();
         let public_key = private_key.public_key();
