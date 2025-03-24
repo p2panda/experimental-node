@@ -4,7 +4,7 @@ use p2panda_core::{Extension, Hash, Header, PruneFlag, PublicKey};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, StdHash, Serialize, Deserialize)]
-pub struct LogId(String);
+pub struct LogId(pub String);
 
 #[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeExtensions {
