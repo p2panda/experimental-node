@@ -8,7 +8,7 @@ use p2panda_sync::TopicQuery;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::{error, trace, warn};
+use tracing::{debug, error, trace, warn};
 
 use super::operation::decode_gossip_message;
 
