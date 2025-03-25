@@ -110,7 +110,7 @@ where
     /// Publish to a persisted topic.
     pub async fn publish_persisted(
         &mut self,
-        topic: Option<&str>,
+        topic: &str,
         payload: &[u8],
         log_id: Option<&str>,
         extensions: Option<E>,
@@ -127,17 +127,10 @@ where
         )
         .await;
 
-        match topic {
-            Some(topic) => {
-                let topic = Topic::Persisted(topic.to_string());
-                self.node
-                    .publish_persisted(&topic, &header, body.as_ref())
-                    .await?;
-            }
-            None => {
-                self.node.ingest(&header, body.as_ref()).await?;
-            }
-        }
+        let topic = Topic::Persisted(topic.to_string());
+        self.node
+            .publish_persisted(&topic, &header, body.as_ref())
+            .await?;
 
         Ok(header.hash())
     }
@@ -218,7 +211,7 @@ mod tests {
         let extensions = NodeExtensions::default();
         let result = node_api
             .publish_persisted(
-                Some(&topic),
+                &topic,
                 &payload,
                 Some(&private_key.public_key().to_hex()),
                 Some(extensions),
@@ -392,7 +385,7 @@ mod tests {
         };
         let result: Result<p2panda_core::Hash, crate::api::ApiError> = node_a_api
             .publish_persisted(
-                Some(&topic),
+                &topic,
                 &node_a_payload,
                 Some(&log_id),
                 Some(extensions.clone()),
@@ -403,12 +396,7 @@ mod tests {
         // Peer B publishes it's own message to the topic.
         let node_b_payload = [5, 6, 7, 8];
         let result = node_b_api
-            .publish_persisted(
-                Some(&topic),
-                &node_b_payload,
-                Some(&log_id),
-                Some(extensions),
-            )
+            .publish_persisted(&topic, &node_b_payload, Some(&log_id), Some(extensions))
             .await;
         assert!(result.is_ok());
 
