@@ -275,7 +275,10 @@ where
         }
     }
 
-    pub async fn read_file(&self, hash: Hash) -> Result<Option<impl AsyncSliceReader>, BlobError> {
+    pub async fn read_file(
+        &self,
+        hash: Hash,
+    ) -> Result<Option<impl AsyncSliceReader + use<T, L, E>>, BlobError> {
         let file_handle = self
             .blobs
             .get(hash)
