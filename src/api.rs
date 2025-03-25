@@ -1,29 +1,35 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use p2panda_core::{Hash, PublicKey};
+use p2panda_core::{Extension, Extensions, Hash, PruneFlag, PublicKey};
 use p2panda_net::TopicId;
 use p2panda_sync::log_sync::TopicLogMap;
 use serde::Serialize;
 use thiserror::Error;
 
 use crate::{
-    extensions::{LogId, NodeExtensions},
+    extensions::LogId,
     node::Node,
     operation::create_operation,
     topic::{Topic, TopicMap},
 };
 
-pub struct NodeApi {
-    pub node: Node<Topic, LogId, NodeExtensions>,
+pub struct NodeApi<E>
+where
+    E:,
+{
+    pub node: Node<Topic, LogId, E>,
     pub topic_map: TopicMap,
     pub subscriptions: HashMap<[u8; 32], Topic>,
 }
 
-impl NodeApi {
-    pub fn new(node: Node<Topic, LogId, NodeExtensions>) -> Self {
+impl<E> NodeApi<E>
+where
+    E: Extensions + Extension<LogId> + Extension<PruneFlag> + Send + Sync + 'static,
+{
+    pub fn new(node: Node<Topic, LogId, E>, topic_map: TopicMap) -> Self {
         Self {
             node,
-            topic_map: TopicMap::new(),
+            topic_map,
             subscriptions: HashMap::default(),
         }
     }
@@ -54,10 +60,11 @@ impl NodeApi {
         &self,
         public_key: &PublicKey,
         topic: &str,
-        log_id: &LogId,
+        log_id: &str,
     ) -> Result<(), ApiError> {
         let topic = Topic::Persisted(topic.to_string());
-        self.topic_map.add_log(&topic, public_key, log_id).await;
+        let log_id = LogId(log_id.to_string());
+        self.topic_map.add_log(&topic, public_key, &log_id).await;
         Ok(())
     }
 
@@ -103,19 +110,14 @@ impl NodeApi {
     /// Publish to a persisted topic.
     pub async fn publish_persisted(
         &mut self,
-        payload: &[u8],
         topic: Option<&str>,
+        payload: &[u8],
         log_id: Option<&str>,
-        prune_flag: bool,
+        extensions: Option<E>,
     ) -> Result<Hash, ApiError> {
         let private_key = self.node.private_key.clone();
 
         let log_id = log_id.map(|log_id| LogId(log_id.to_string()));
-        let extensions = NodeExtensions {
-            log_id: log_id.clone(),
-            prune_flag: prune_flag.into(),
-        };
-
         let (header, body) = create_operation(
             &mut self.node.store,
             &private_key,
@@ -183,49 +185,54 @@ mod tests {
     use crate::api::NodeApi;
 
     use crate::extensions::{LogId, NodeExtensions};
-    use crate::stream::EventData;
+    use crate::stream::{EventData, StreamEvent};
     use crate::topic::TopicMap;
 
     use super::Node;
 
     #[tokio::test]
-    async fn publish() {
-        let node_private_key = PrivateKey::new();
+    async fn subscribe_publish_persisted() {
+        let private_key = PrivateKey::new();
         let store = MemoryStore::<LogId, NodeExtensions>::new();
         let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node, mut stream_rx, _system_rx) = Node::new(
             "my_network".to_string(),
-            node_private_key.clone(),
+            private_key.clone(),
             None,
             None,
             store,
             blobs_root_dir,
-            topic_map,
+            topic_map.clone(),
         )
         .await
         .unwrap();
 
-        let mut node_api = NodeApi::new(node);
+        let mut node_api = NodeApi::new(node, topic_map);
 
         let topic = "some_topic";
         let result = node_api.subscribe_persisted(&topic).await;
         assert!(result.is_ok());
 
-        let log_id = "my_log";
         let payload = [0, 1, 2, 3];
+        let extensions = NodeExtensions::default();
         let result = node_api
-            .publish_persisted(&payload, Some(&topic), Some(&log_id), false)
+            .publish_persisted(
+                Some(&topic),
+                &payload,
+                Some(&private_key.public_key().to_hex()),
+                Some(extensions),
+            )
             .await;
 
         assert!(result.is_ok());
         let operation_hash = result.unwrap();
 
-        let expected_log_id = LogId(log_id.to_string());
+        let expected_log_id = LogId(private_key.public_key().to_hex());
         let event = stream_rx.recv().await.unwrap();
         let header = event.header.unwrap();
 
-        assert_eq!(header.public_key, node_private_key.public_key());
+        assert_eq!(header.public_key, private_key.public_key());
         assert_eq!(header.hash(), operation_hash);
         assert_eq!(header.extension(), Some(expected_log_id));
 
@@ -236,198 +243,240 @@ mod tests {
         assert_eq!(value, payload);
     }
 
-    // @TODO: bring back all tests.
-    //
-    //     #[tokio::test]
-    //     async fn two_peers_subscribe() {
-    //         let peer_a = Rpc {
-    //             context: Service::run().await,
-    //         };
-    //         let peer_b = Rpc {
-    //             context: Service::run().await,
-    //         };
-    //
-    //         let (peer_a_tx, _peer_a_rx) = broadcast::channel(100);
-    //         let (peer_b_tx, mut peer_b_rx) = broadcast::channel(100);
-    //
-    //         let result = peer_a.init(peer_a_tx).await;
-    //         assert!(result.is_ok());
-    //
-    //         let result = peer_b.init(peer_b_tx).await;
-    //         assert!(result.is_ok());
-    //
-    //         let topic = "some_topic";
-    //         let result = peer_a.subscribe_ephemeral(&topic).await;
-    //         assert!(result.is_ok());
-    //
-    //         let result = peer_b.subscribe_ephemeral(&topic).await;
-    //         assert!(result.is_ok());
-    //
-    //         let send_payload = json!({
-    //             "message": "organize!"
-    //         });
-    //
-    //         {
-    //             let send_payload = send_payload.clone();
-    //             tokio::spawn(async move {
-    //                 loop {
-    //                     tokio::time::sleep(Duration::from_secs(1)).await;
-    //                     let result = peer_a
-    //                         .publish_ephemeral(&topic, &serde_json::to_vec(&send_payload).unwrap())
-    //                         .await;
-    //                     assert!(result.is_ok());
-    //                 }
-    //             });
-    //         }
-    //
-    //         let mut message_received = false;
-    //         while let Ok(event) = peer_b_rx.recv().await {
-    //             if let ChannelEvent::Stream(StreamEvent {
-    //                 data: EventData::Ephemeral(payload),
-    //                 ..
-    //             }) = event
-    //             {
-    //                 assert_eq!(send_payload, payload);
-    //                 message_received = true;
-    //                 break;
-    //             }
-    //         }
-    //
-    //         assert!(message_received);
-    //     }
-    //
-    //     #[tokio::test]
-    //     async fn two_peers_sync() {
-    //         let peer_a = Rpc {
-    //             context: Service::run().await,
-    //         };
-    //         let peer_b = Rpc {
-    //             context: Service::run().await,
-    //         };
-    //
-    //         let peer_a_public_key = peer_a.public_key().await.unwrap();
-    //         let peer_b_public_key = peer_b.public_key().await.unwrap();
-    //
-    //         let (peer_a_tx, mut peer_a_rx) = broadcast::channel(100);
-    //         let (peer_b_tx, mut peer_b_rx) = broadcast::channel(100);
-    //
-    //         let result = peer_a.init(peer_a_tx).await;
-    //         assert!(result.is_ok());
-    //
-    //         let result = peer_b.init(peer_b_tx).await;
-    //         assert!(result.is_ok());
-    //
-    //         let topic = "messages";
-    //         let log_path = json!("messages").into();
-    //         let stream_args = StreamArgs::default();
-    //
-    //         let peer_a_payload = json!({
-    //             "message": "organize!"
-    //         });
-    //
-    //         // Peer A publishes the first message to a new stream.
-    //         let result = peer_a
-    //             .publish_persisted(
-    //                 &serde_json::to_vec(&peer_a_payload).unwrap(),
-    //                 &stream_args,
-    //                 Some(&log_path),
-    //                 Some(&topic),
-    //             )
-    //             .await;
-    //         assert!(result.is_ok());
-    //
-    //         // We need these values so Peer B can subscribe and publish to the correct stream.
-    //         let (operation_id, stream_id) = result.unwrap();
-    //
-    //         let stream_args = StreamArgs {
-    //             id: Some(stream_id),
-    //             root_hash: Some(operation_id.clone()),
-    //             owner: Some(peer_a_public_key.clone()),
-    //         };
-    //
-    //         let peer_b_payload = json!({
-    //             "message": "Hell yeah!"
-    //         });
-    //
-    //         // Peer B publishes it's own message to the stream.
-    //         let result = peer_b
-    //             .publish_persisted(
-    //                 &serde_json::to_vec(&peer_b_payload).unwrap(),
-    //                 &stream_args,
-    //                 Some(&log_path),
-    //                 Some(&topic),
-    //             )
-    //             .await;
-    //         assert!(result.is_ok());
-    //
-    //         // Both peers add themselves and each other to their topic map.
-    //         let stream = Stream {
-    //             root_hash: operation_id.into(),
-    //             owner: peer_a_public_key.into(),
-    //         };
-    //         let log_id = LogId {
-    //             stream,
-    //             log_path: Some(log_path),
-    //         };
-    //
-    //         peer_a
-    //             .add_topic_log(&peer_a_public_key, &topic, &log_id)
-    //             .await
-    //             .unwrap();
-    //         peer_a
-    //             .add_topic_log(&peer_b_public_key, &topic, &log_id)
-    //             .await
-    //             .unwrap();
-    //
-    //         peer_b
-    //             .add_topic_log(&peer_a_public_key, &topic, &log_id)
-    //             .await
-    //             .unwrap();
-    //         peer_b
-    //             .add_topic_log(&peer_b_public_key, &topic, &log_id)
-    //             .await
-    //             .unwrap();
-    //
-    //         // Finally they both subscribe to the topic.
-    //         let result = peer_a.subscribe_persisted(&topic).await;
-    //         assert!(result.is_ok());
-    //         let result = peer_b.subscribe_persisted(&topic).await;
-    //         assert!(result.is_ok());
-    //
-    //         // Peer A should receive Peer B's message via sync.
-    //         let mut message_received = false;
-    //         while let Ok(event) = peer_a_rx.recv().await {
-    //             if let ChannelEvent::Stream(StreamEvent {
-    //                 data: EventData::Application(payload),
-    //                 meta: Some(EventMeta { author, .. }),
-    //             }) = event
-    //             {
-    //                 if author == peer_b_public_key {
-    //                     assert_eq!(peer_b_payload, payload);
-    //                     message_received = true;
-    //                     break;
-    //                 }
-    //             }
-    //         }
-    //
-    //         assert!(message_received);
-    //
-    //         // Peer B should receive Peer A's message via sync.
-    //         let mut message_received = false;
-    //         while let Ok(event) = peer_b_rx.recv().await {
-    //             if let ChannelEvent::Stream(StreamEvent {
-    //                 data: EventData::Application(payload),
-    //                 meta: Some(EventMeta { author, .. }),
-    //             }) = event
-    //             {
-    //                 if author == peer_a_public_key {
-    //                     assert_eq!(peer_a_payload, payload);
-    //                     message_received = true;
-    //                     break;
-    //                 }
-    //             }
-    //         }
-    //
-    //         assert!(message_received);
-    //     }
+    #[tokio::test]
+    async fn subscribe_publish_ephemeral() {
+        let node_private_key = PrivateKey::new();
+        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
+        let topic_map = TopicMap::new();
+        let (node, _stream_rx, _system_rx) = Node::new(
+            "my_network".to_string(),
+            node_private_key.clone(),
+            None,
+            None,
+            store,
+            blobs_root_dir,
+            topic_map.clone(),
+        )
+        .await
+        .unwrap();
+        let mut node_api = NodeApi::new(node, topic_map);
+
+        let topic = "some_topic";
+        let result = node_api.subscribe_ephemeral(&topic).await;
+        assert!(result.is_ok());
+
+        let payload = [0, 1, 2, 3];
+        let result = node_api.publish_ephemeral(&topic, &payload).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn two_peers_subscribe() {
+        let node_a_private_key = PrivateKey::new();
+        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
+        let topic_map = TopicMap::new();
+        let (node_a, _node_a_stream_rx, _system_rx) = Node::new(
+            "my_network".to_string(),
+            node_a_private_key.clone(),
+            None,
+            None,
+            store,
+            blobs_root_dir,
+            topic_map.clone(),
+        )
+        .await
+        .unwrap();
+        let mut node_a_api = NodeApi::new(node_a, topic_map);
+
+        let node_b_private_key = PrivateKey::new();
+        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
+        let topic_map = TopicMap::new();
+        let (node_b, mut node_b_stream_rx, _system_rx) = Node::new(
+            "my_network".to_string(),
+            node_b_private_key.clone(),
+            None,
+            None,
+            store,
+            blobs_root_dir,
+            topic_map.clone(),
+        )
+        .await
+        .unwrap();
+        let mut node_b_api = NodeApi::new(node_b, topic_map);
+
+        let topic = "some_topic";
+        let result = node_a_api.subscribe_ephemeral(&topic).await;
+        assert!(result.is_ok());
+
+        let result = node_b_api.subscribe_ephemeral(&topic).await;
+        assert!(result.is_ok());
+
+        let send_payload = [0, 1, 2, 3];
+
+        {
+            let send_payload = send_payload.clone();
+            tokio::spawn(async move {
+                loop {
+                    let result = node_a_api.publish_ephemeral(&topic, &send_payload).await;
+                    assert!(result.is_ok());
+                }
+            });
+        }
+
+        let mut message_received = false;
+        while let Some(event) = node_b_stream_rx.recv().await {
+            let StreamEvent {
+                data: EventData::Ephemeral(payload),
+                ..
+            } = event
+            else {
+                panic!()
+            };
+            {
+                assert_eq!(send_payload.to_vec(), payload);
+                message_received = true;
+                break;
+            }
+        }
+
+        assert!(message_received);
+    }
+
+    #[tokio::test]
+    async fn two_peers_sync() {
+        let node_a_private_key = PrivateKey::new();
+        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
+        let topic_map = TopicMap::new();
+        let (node_a, mut node_a_stream_rx, _system_rx) = Node::new(
+            "my_network".to_string(),
+            node_a_private_key.clone(),
+            None,
+            None,
+            store,
+            blobs_root_dir,
+            topic_map.clone(),
+        )
+        .await
+        .unwrap();
+        let mut node_a_api = NodeApi::new(node_a, topic_map);
+
+        let node_b_private_key = PrivateKey::new();
+        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
+        let topic_map = TopicMap::new();
+        let (node_b, mut node_b_stream_rx, _system_rx) = Node::new(
+            "my_network".to_string(),
+            node_b_private_key.clone(),
+            None,
+            None,
+            store,
+            blobs_root_dir,
+            topic_map.clone(),
+        )
+        .await
+        .unwrap();
+        let mut node_b_api = NodeApi::new(node_b, topic_map);
+
+        let topic = "messages";
+        let log_id = "messages";
+        let node_a_payload = [0, 1, 2, 3];
+
+        // Peer A publishes the first message to a new topic.
+        let extensions = NodeExtensions {
+            log_id: Some(LogId(log_id.to_string())),
+            ..Default::default()
+        };
+        let result: Result<p2panda_core::Hash, crate::api::ApiError> = node_a_api
+            .publish_persisted(
+                Some(&topic),
+                &node_a_payload,
+                Some(&log_id),
+                Some(extensions.clone()),
+            )
+            .await;
+        assert!(result.is_ok());
+
+        // Peer B publishes it's own message to the topic.
+        let node_b_payload = [5, 6, 7, 8];
+        let result = node_b_api
+            .publish_persisted(
+                Some(&topic),
+                &node_b_payload,
+                Some(&log_id),
+                Some(extensions),
+            )
+            .await;
+        assert!(result.is_ok());
+
+        // Both peers add themselves and each other to their topic map.
+        node_a_api
+            .add_topic_log(&node_a_private_key.public_key(), &topic, &log_id)
+            .await
+            .unwrap();
+        node_a_api
+            .add_topic_log(&node_b_private_key.public_key(), &topic, &log_id)
+            .await
+            .unwrap();
+        node_b_api
+            .add_topic_log(&node_a_private_key.public_key(), &topic, &log_id)
+            .await
+            .unwrap();
+        node_b_api
+            .add_topic_log(&node_b_private_key.public_key(), &topic, &log_id)
+            .await
+            .unwrap();
+
+        let result = node_a_api.subscribe_persisted(&topic).await;
+        assert!(result.is_ok());
+        let result = node_b_api.subscribe_persisted(&topic).await;
+        assert!(result.is_ok());
+
+        // Peer A should receive Peer B's message via sync.
+        let mut message_received = false;
+        while let Some(event) = node_a_stream_rx.recv().await {
+            println!("{event:?}");
+            let StreamEvent {
+                data: EventData::Application(payload),
+                header: Some(header),
+            } = event
+            else {
+                panic!()
+            };
+            {
+                if header.public_key == node_b_private_key.public_key() {
+                    assert_eq!(node_b_payload.to_vec(), payload);
+                    message_received = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(message_received);
+
+        // Peer B should receive Peer A's message via sync.
+        let mut message_received = false;
+        while let Some(event) = node_b_stream_rx.recv().await {
+            println!("{event:?}");
+            let StreamEvent {
+                data: EventData::Application(payload),
+                header: Some(header),
+            } = event
+            else {
+                panic!()
+            };
+            {
+                if header.public_key == node_a_private_key.public_key() {
+                    assert_eq!(node_a_payload.to_vec(), payload);
+                    message_received = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(message_received);
+    }
 }

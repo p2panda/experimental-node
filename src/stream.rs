@@ -11,7 +11,7 @@ use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::debug;
+use tracing::{debug, error};
 
 // use super::extensions::{Extensions, LogId, LogPath, Stream, StreamOwner, StreamRootHash};
 
@@ -125,7 +125,8 @@ where
                         .ingest(operation_store, 512)
                         .filter_map(|result| match result {
                             Ok(operation) => Some(operation),
-                            Err(_err) => {
+                            Err(err) => {
+                                error!("error in ingest stream processor: {}", err);
                                 // @TODO(adz): Which errors do we want to report to the application and
                                 // which not? It might become pretty spammy in some cases and I'm not sure
                                 // if the frontend can do anything about it?
@@ -395,7 +396,7 @@ mod tests {
             operation_store,
             private_key,
             log_id.as_ref(),
-            extensions.clone(),
+            Some(extensions.clone()),
             Some(&[0, 1, 2, 3]),
         )
         .await;

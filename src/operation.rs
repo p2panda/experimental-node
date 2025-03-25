@@ -8,7 +8,7 @@ pub async fn create_operation<L, E>(
     store: &mut MemoryStore<L, E>,
     private_key: &PrivateKey,
     log_id: Option<&L>,
-    extensions: E,
+    extensions: Option<E>,
     body: Option<&[u8]>,
 ) -> (Header<E>, Option<Body>)
 where
@@ -46,7 +46,7 @@ where
         seq_num,
         backlink,
         previous: vec![],
-        extensions: Some(extensions),
+        extensions,
     };
     header.sign(private_key);
 
