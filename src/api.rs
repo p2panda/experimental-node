@@ -14,8 +14,6 @@ use crate::{
 };
 
 pub struct NodeApi<E>
-where
-    E:,
 {
     pub node: Node<Topic, LogId, E>,
     pub topic_map: TopicMap,
