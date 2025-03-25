@@ -249,7 +249,7 @@ where
 
     pub async fn subscribe_persisted(&self, topic: &T) -> Result<()> {
         self.network_actor_tx
-            .send(ToNodeActor::SubscribeProcessed {
+            .send(ToNodeActor::SubscribePersisted {
                 topic: topic.clone(),
             })
             .await?;
@@ -258,7 +258,7 @@ where
 
     pub async fn subscribe_ephemeral(&self, topic: &T) -> Result<()> {
         self.network_actor_tx
-            .send(ToNodeActor::Subscribe {
+            .send(ToNodeActor::SubscribeEphemeral {
                 topic: topic.clone(),
             })
             .await?;

@@ -13,10 +13,10 @@ use tracing::{error, trace, warn};
 use super::operation::decode_gossip_message;
 
 pub enum ToNodeActor<T> {
-    SubscribeProcessed {
+    SubscribePersisted {
         topic: T,
     },
-    Subscribe {
+    SubscribeEphemeral {
         topic: T,
     },
     Broadcast {
@@ -32,7 +32,8 @@ pub enum ToNodeActor<T> {
 pub struct NodeActor<T, E> {
     pub network: Network<T>,
     inbox: mpsc::Receiver<ToNodeActor<T>>,
-    topic_rx: SelectAll<ReceiverStream<FromNetwork>>,
+    topic_persisted_rx: SelectAll<ReceiverStream<FromNetwork>>,
+    topic_ephemeral_rx: SelectAll<ReceiverStream<FromNetwork>>,
     topic_tx: HashMap<[u8; 32], mpsc::Sender<ToNetwork>>,
     stream_processor_tx: mpsc::Sender<(Header<E>, Option<Body>, Vec<u8>)>,
     ephemeral_tx: mpsc::Sender<Vec<u8>>,
@@ -52,7 +53,8 @@ where
         Self {
             network,
             inbox,
-            topic_rx: SelectAll::new(),
+            topic_persisted_rx: SelectAll::new(),
+            topic_ephemeral_rx: SelectAll::new(),
             topic_tx: HashMap::new(),
             stream_processor_tx,
             ephemeral_tx,
@@ -93,8 +95,11 @@ where
                         }
                     }
                 },
-                Some(event) = self.topic_rx.next() => {
-                    self.on_network_event(event).await?;
+                Some(event) = self.topic_persisted_rx.next() => {
+                    self.on_network_event_persisted(event).await?;
+                },
+                Some(event) = self.topic_ephemeral_rx.next() => {
+                    self.on_network_event_ephemeral(event).await?;
                 },
                 else => {
                     // Error occurred outside of actor and our select! loop got disabled. We exit
@@ -108,25 +113,27 @@ where
 
     async fn on_actor_message(&mut self, msg: ToNodeActor<T>) -> Result<()> {
         match msg {
-            ToNodeActor::SubscribeProcessed { topic } => {
+            ToNodeActor::SubscribePersisted { topic } => {
                 let topic_id = topic.id();
                 let (topic_tx, topic_rx, _ready) = self.network.subscribe(topic).await?;
                 self.topic_tx.insert(topic_id, topic_tx);
-                self.topic_rx.push(ReceiverStream::new(topic_rx));
+                self.topic_persisted_rx.push(ReceiverStream::new(topic_rx));
             }
-            ToNodeActor::Subscribe { topic } => {
+            ToNodeActor::SubscribeEphemeral { topic } => {
                 let topic_id = topic.id();
                 let (topic_tx, topic_rx, _ready) = self.network.subscribe(topic).await?;
                 self.topic_tx.insert(topic_id, topic_tx.clone());
-                self.topic_rx.push(ReceiverStream::new(topic_rx));
+                self.topic_ephemeral_rx.push(ReceiverStream::new(topic_rx));
             }
             ToNodeActor::Broadcast { topic_id, bytes } => match self.topic_tx.get(&topic_id) {
                 Some(tx) => {
-                    if let Err(_err) = tx.send(ToNetwork::Message { bytes }).await {
+                    if let Err(err) = tx.send(ToNetwork::Message { bytes }).await {
+                        error!("error sending on topic channel: {}", err)
                         // @TODO: Handle error
                     }
                 }
                 None => {
+                    debug!("attempted to broadcast on unknown topic: {:?}", topic_id);
                     // @TODO: Can we ignore this?
                 }
             },
@@ -138,7 +145,7 @@ where
         Ok(())
     }
 
-    async fn on_network_event(&mut self, event: FromNetwork) -> Result<()> {
+    async fn on_network_event_persisted(&mut self, event: FromNetwork) -> Result<()> {
         let (header_bytes, body_bytes) = match event {
             FromNetwork::GossipMessage { bytes, .. } => {
                 trace!(
@@ -148,12 +155,8 @@ where
                 );
                 match decode_gossip_message(&bytes) {
                     Ok(result) => result,
-                    Err(_err) => {
-                        // @TODO(sam): If decoding into (header, body) tuple we assume this is an ephemeral
-                        // "non-p2panda" message. We need to think of a better solution here. The issue is
-                        // that the node actor can't distinguish between messages arriving from the
-                        // network which are p2panda or not....
-                        self.ephemeral_tx.send(bytes).await?;
+                    Err(err) => {
+                        error!("Error decoding gossip message: {err}");
                         return Ok(());
                     }
                 }
@@ -184,6 +187,36 @@ where
         self.stream_processor_tx
             .send((header, body, header_bytes))
             .await?;
+
+        Ok(())
+    }
+
+    async fn on_network_event_ephemeral(&mut self, event: FromNetwork) -> Result<()> {
+        let bytes = match event {
+            FromNetwork::GossipMessage { bytes, .. } => {
+                trace!(
+                    source = "gossip",
+                    bytes = bytes.len(),
+                    "received network message"
+                );
+                bytes
+            }
+            FromNetwork::SyncMessage {
+                header: header_bytes,
+                payload: body_bytes,
+                ..
+            } => {
+                trace!(
+                    source = "sync",
+                    bytes = header_bytes.len() + body_bytes.as_ref().map_or(0, |b| b.len()),
+                    "received network message"
+                );
+                error!("unexpected ephemeral message received via sync");
+                return Ok(());
+            }
+        };
+
+        self.ephemeral_tx.send(bytes).await?;
 
         Ok(())
     }
