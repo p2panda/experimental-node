@@ -21,7 +21,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinError;
 use tokio_stream::StreamExt;
 use tokio_util::task::AbortOnDropHandle;
-use tracing::error;
+use tracing::{debug, error};
 
 use super::{
     actor::{NodeActor, ToNodeActor},
@@ -109,14 +109,14 @@ where
             .private_key(private_key.clone());
 
         if let Some(bootstrap_node_id) = bootstrap_node_id {
-            println!(
+            debug!(
                 "P2Panda: Direct address provided for peer: {}",
                 bootstrap_node_id
             );
             network_builder = network_builder.direct_address(bootstrap_node_id, vec![], relay_url);
         } else {
             // I am probably the bootstrap node since I know of no others
-            println!("P2Panda: No direct address provided, starting as bootstrap node");
+            debug!("P2Panda: No direct address provided, starting as bootstrap node");
             network_builder = network_builder.bootstrap();
         }
 

@@ -424,7 +424,6 @@ mod tests {
         // Peer A should receive Peer B's message via sync.
         let mut message_received = false;
         while let Some(event) = node_a_stream_rx.recv().await {
-            println!("{event:?}");
             let StreamEvent {
                 data: EventData::Application(payload),
                 header: Some(header),
@@ -446,7 +445,6 @@ mod tests {
         // Peer B should receive Peer A's message via sync.
         let mut message_received = false;
         while let Some(event) = node_b_stream_rx.recv().await {
-            println!("{event:?}");
             let StreamEvent {
                 data: EventData::Application(payload),
                 header: Some(header),
