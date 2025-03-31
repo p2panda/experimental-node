@@ -4,14 +4,14 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash as StdHash, Hasher};
 
-use p2panda_store::OperationStore;
-use sqlx::migrate;
+use p2panda_store::{LogStore, OperationStore};
 use sqlx::migrate::{MigrateDatabase, MigrateError};
+use sqlx::prelude::FromRow;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
-use sqlx::{Error as SqlxError, Sqlite};
+use sqlx::{Error as SqlxError, Sqlite, query_as};
+use sqlx::{migrate, query};
 use thiserror::Error;
 
-use p2panda_core::cbor::{DecodeError, EncodeError};
 use p2panda_core::{Extension, Hash, PublicKey};
 
 use crate::stream::StreamControllerError;
@@ -20,6 +20,9 @@ use super::{Operation, StreamControllerStore};
 
 #[derive(Debug, Error)]
 pub enum SqliteStoreError {
+    #[error(transparent)]
+    ControllerError(#[from] StreamControllerError),
+
     #[error("an error occurred with the sqlite database: {0}")]
     Database(#[from] SqlxError),
 }
@@ -93,28 +96,50 @@ fn calculate_hash<T: StdHash>(t: &T) -> u64 {
     s.finish()
 }
 
+#[derive(FromRow, Debug, Clone, PartialEq, Eq)]
+pub struct LogHeight(String);
+
+impl From<LogHeight> for u64 {
+    fn from(row: LogHeight) -> Self {
+        row.0.parse().unwrap()
+    }
+}
+
 impl<L, E> StreamControllerStore<L, E> for StreamSqliteStore<L, E>
 where
     L: p2panda_store::LogId + Send + Sync,
     E: p2panda_core::Extensions + Extension<L> + Send + Sync,
 {
-    type Error = StreamControllerError;
+    type Error = SqliteStoreError;
 
     async fn ack(&self, operation_id: Hash) -> Result<(), Self::Error> {
         let Ok(Some((header, _))) = self.operation_store.get_operation(operation_id).await else {
-            return Err(StreamControllerError::AckedUnknownOperation(operation_id));
+            return Err(StreamControllerError::AckedUnknownOperation(operation_id).into());
         };
 
-        todo!();
-        //         let mut acked = self.acked.write().await;
-        //
-        //         let log_id: Option<L> = header.extension();
-        //         let Some(log_id) = log_id else {
-        //             return Err(StreamControllerError::MissingLogId(operation_id));
-        //         };
-        //
-        //         // Remember the "acknowledged" log-height for this log.
-        //         acked.insert((header.public_key, log_id), header.seq_num);
+        let log_id: Option<L> = header.extension();
+        let Some(log_id) = log_id else {
+            return Err(StreamControllerError::MissingLogId(operation_id).into());
+        };
+
+        // Remember the "acknowledged" log-height for this log.
+        query(
+            "
+            INSERT INTO
+                operations_v1 (
+                    public_key,
+                    log_id,
+                    seq_num
+                )
+            VALUES
+                (?, ?, ?)
+            ",
+        )
+        .bind(header.public_key.to_hex())
+        .bind(calculate_hash(&log_id).to_string())
+        .bind(header.seq_num.to_string())
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -123,52 +148,71 @@ where
         &self,
         logs: HashMap<PublicKey, Vec<L>>,
     ) -> Result<Vec<Operation<E>>, Self::Error> {
-        todo!();
+        let mut result = Vec::new();
+        for (public_key, log_ids) in logs {
+            for log_id in log_ids {
+                let ack_log_height = query_as::<_, LogHeight>(
+                    "
+                    SELECT
+                        seq_num
+                    FROM
+                        acked_v1
+                    WHERE
+                        public_key = ?,
+                        log_id = ?
+                    ",
+                )
+                .bind(public_key.to_string())
+                .bind(calculate_hash(&log_id).to_string())
+                .fetch_optional(&self.pool)
+                .await?;
 
-        //         let acked = self.acked.read().await;
-        //
-        //         let mut result = Vec::new();
-        //         for (public_key, log_ids) in logs {
-        //             for log_id in log_ids {
-        //                 match acked.get(&(public_key, log_id.clone())) {
-        //                     Some(ack_log_height) => {
-        //                         let Ok(operations) = self
-        //                             .operation_store
-        //                             // Get all operations from > ack_log_height
-        //                             .get_log(&public_key, &log_id, Some(*ack_log_height + 1))
-        //                             .await;
-        //
-        //                         if let Some(operations) = operations {
-        //                             for (header, body) in operations {
-        //                                 // @TODO(adz): Getting the encoded header bytes through encoding
-        //                                 // like this feels redundant and should be possible to retreive
-        //                                 // just from calling "get_log".
-        //                                 let header_bytes = header.to_bytes();
-        //                                 result.push((header, body, header_bytes));
-        //                             }
-        //                         }
-        //                     }
-        //                     None => {
-        //                         let Ok(operations) = self
-        //                             .operation_store
-        //                             // Get all operations from > ack_log_height
-        //                             .get_log(&public_key, &log_id, Some(0))
-        //                             .await;
-        //
-        //                         if let Some(operations) = operations {
-        //                             for (header, body) in operations {
-        //                                 // @TODO(adz): Getting the encoded header bytes through encoding
-        //                                 // like this feels redundant and should be possible to retreive
-        //                                 // just from calling "get_log".
-        //                                 let header_bytes = header.to_bytes();
-        //                                 result.push((header, body, header_bytes));
-        //                             }
-        //                         }
-        //                     }
-        //                 }
-        //             }
-        //         }
-        //
-        //         Ok(result)
+                match ack_log_height {
+                    Some(ack_log_height) => {
+                        let ack_log_height: u64 = ack_log_height.into();
+                        let Ok(operations) = self
+                            .operation_store
+                            // Get all operations from > ack_log_height
+                            .get_log(&public_key, &log_id, Some(ack_log_height + 1))
+                            .await
+                        else {
+                            todo!()
+                        };
+
+                        if let Some(operations) = operations {
+                            for (header, body) in operations {
+                                // @TODO(adz): Getting the encoded header bytes through encoding
+                                // like this feels redundant and should be possible to retreive
+                                // just from calling "get_log".
+                                let header_bytes = header.to_bytes();
+                                result.push((header, body, header_bytes));
+                            }
+                        }
+                    }
+                    None => {
+                        let Ok(operations) = self
+                            .operation_store
+                            // Get all operations from > ack_log_height
+                            .get_log(&public_key, &log_id, Some(0))
+                            .await
+                        else {
+                            todo!()
+                        };
+
+                        if let Some(operations) = operations {
+                            for (header, body) in operations {
+                                // @TODO(adz): Getting the encoded header bytes through encoding
+                                // like this feels redundant and should be possible to retreive
+                                // just from calling "get_log".
+                                let header_bytes = header.to_bytes();
+                                result.push((header, body, header_bytes));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
