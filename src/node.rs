@@ -23,10 +23,11 @@ use tokio_stream::StreamExt;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, error};
 
+use crate::stream::{StreamController, StreamControllerError, StreamEvent, ToStreamController};
+
 use super::{
     actor::{NodeActor, ToNodeActor},
     operation::encode_gossip_message,
-    stream::{StreamController, StreamControllerError, StreamEvent, ToStreamController},
 };
 
 pub struct Node<T, L, E> {
