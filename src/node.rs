@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use futures_util::future::{MapErr, Shared};
 use futures_util::{FutureExt, TryFutureExt};
 use iroh_io::AsyncSliceReader;
@@ -11,9 +11,10 @@ use p2panda_discovery::mdns::LocalDiscovery;
 use p2panda_net::{
     Network, NetworkBuilder, NetworkId, RelayUrl, SyncConfiguration, SystemEvent, TopicId,
 };
-use p2panda_store::{LogId, MemoryStore};
-use p2panda_sync::TopicQuery;
+use p2panda_store::sqlite::store::{connection_pool, create_database, run_pending_migrations};
+use p2panda_store::{LogId, SqliteStore};
 use p2panda_sync::log_sync::{LogSyncProtocol, TopicLogMap};
+use p2panda_sync::TopicQuery;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::pin;
@@ -23,15 +24,36 @@ use tokio_stream::StreamExt;
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{debug, error};
 
+use crate::stream::{StreamController, StreamControllerError, StreamEvent, ToStreamController};
+
 use super::{
     actor::{NodeActor, ToNodeActor},
     operation::encode_gossip_message,
-    stream::{StreamController, StreamControllerError, StreamEvent, ToStreamController},
 };
+
+// @TODO(glyph): Can we move this into p2panda-store?
+async fn initialise_database<L, E>(url: &str) -> Result<SqliteStore<L, E>>
+where
+    L: LogId + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    E: Extensions + Extension<L> + Extension<PruneFlag> + Send + Sync + 'static,
+{
+    create_database(&url).await?;
+
+    let pool = connection_pool(&url, 1).await?;
+
+    if run_pending_migrations(&pool).await.is_err() {
+        pool.close().await;
+        panic!("Database migration failed");
+    }
+
+    let store = SqliteStore::new(pool);
+
+    Ok(store)
+}
 
 pub struct Node<T, L, E> {
     pub private_key: PrivateKey,
-    pub store: MemoryStore<L, E>,
+    pub store: SqliteStore<L, E>,
     pub network: Network<T>,
     blobs: Blobs<T, BlobsStore>,
     #[allow(dead_code)]
@@ -51,11 +73,10 @@ where
     pub async fn new<TM: TopicLogMap<T, L> + 'static>(
         network_name: String,
         private_key: PrivateKey,
-        bootstrap_node_id: Option<PublicKey>,
-        relay_url: Option<RelayUrl>,
-        store: MemoryStore<L, E>,
-        blobs_root_dir: PathBuf,
         topic_map: TM,
+        relay_url: Option<RelayUrl>,
+        bootstrap_node_id: Option<PublicKey>,
+        app_data_dir: Option<PathBuf>,
     ) -> Result<(
         Self,
         mpsc::Receiver<StreamEvent<E>>,
@@ -64,6 +85,18 @@ where
         let network_id: NetworkId = Hash::new(network_name).into();
 
         let rt = tokio::runtime::Handle::current();
+
+        // Instantiate the SQLite store.
+        //
+        // This takes care of creating the database if it doesn't exist, setting up a connection
+        // pool and running any pending migrations.
+        let store = if let Some(path) = app_data_dir.as_ref() {
+            let path = path.display().to_string();
+            initialise_database(&path).await?
+        } else {
+            let url = format!("sqlite://toolkitty?mode=memory&cache=private");
+            initialise_database(&url).await?
+        };
 
         let (stream, stream_tx, stream_rx) = StreamController::new(store.clone());
         let (ephemeral_tx, mut ephemeral_rx) = mpsc::channel(1024);
@@ -120,9 +153,15 @@ where
             network_builder = network_builder.bootstrap();
         }
 
-        let blobs_store = BlobsStore::load(blobs_root_dir).await?;
-        let (network, blobs) = Blobs::from_builder(network_builder, blobs_store).await?;
+        let blobs_store = match app_data_dir {
+            Some(app_data_dir) => BlobsStore::load(app_data_dir).await?,
+            None => {
+                let temp_dir = tempfile::tempdir()?;
+                BlobsStore::load(temp_dir.into_path()).await?
+            }
+        };
 
+        let (network, blobs) = Blobs::from_builder(network_builder, blobs_store).await?;
         let system_events_rx = network.events().await?;
 
         let (network_actor_tx, network_actor_rx) = mpsc::channel(64);

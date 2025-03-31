@@ -1,17 +1,18 @@
 use std::collections::HashMap;
-use std::future::Future;
-use std::sync::Arc;
 
 use p2panda_core::{Body, Extension, Extensions, Hash, Header, PruneFlag, PublicKey};
-use p2panda_store::{LogStore, MemoryStore, OperationStore};
+use p2panda_store::MemoryStore;
 use p2panda_stream::IngestExt;
 use serde::Serialize;
 use thiserror::Error;
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
+
+use super::{StreamEvent, StreamMemoryStore};
+use super::store::StreamControllerStore;
 
 // use super::extensions::{Extensions, LogId, LogPath, Stream, StreamOwner, StreamRootHash};
 
@@ -176,67 +177,6 @@ where
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct StreamEvent<E> {
-    pub header: Option<Header<E>>,
-    pub data: EventData,
-}
-
-impl<E> StreamEvent<E> {
-    pub fn from_operation(header: Header<E>, body: Body) -> Self {
-        Self {
-            header: Some(header),
-            data: EventData::Application(body.to_bytes()),
-        }
-    }
-
-    pub fn from_bytes(payload: Vec<u8>) -> Self {
-        Self {
-            header: None,
-            data: EventData::Ephemeral(payload),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn from_error(error: StreamError, header: Header<E>) -> Self {
-        Self {
-            header: Some(header),
-            data: EventData::Error(error),
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum EventData {
-    Application(Vec<u8>),
-    Ephemeral(Vec<u8>),
-    Error(StreamError),
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Debug, Error)]
-pub enum StreamError {
-    #[error(transparent)]
-    IngestError(p2panda_stream::operation::IngestError),
-}
-
-impl PartialEq for StreamError {
-    fn eq(&self, other: &Self) -> bool {
-        self.to_string() == other.to_string()
-    }
-}
-
-impl Serialize for StreamError {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::ser::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum StreamControllerError {
     #[error("tried do ack unknown operation {0}")]
@@ -252,118 +192,6 @@ impl Serialize for StreamControllerError {
         S: serde::ser::Serializer,
     {
         serializer.serialize_str(&self.to_string())
-    }
-}
-
-type Operation<E> = (Header<E>, Option<Body>, Vec<u8>);
-
-trait StreamControllerStore<L, E>
-where
-    E: p2panda_core::Extensions,
-{
-    type Error;
-
-    /// Mark operation as acknowledged.
-    fn ack(&self, operation_id: Hash) -> impl Future<Output = Result<(), Self::Error>>;
-
-    /// Return all operations from given logs which have not yet been acknowledged.
-    fn unacked(
-        &self,
-        logs: HashMap<PublicKey, Vec<L>>,
-    ) -> impl Future<Output = Result<Vec<Operation<E>>, Self::Error>>;
-}
-
-#[derive(Clone, Debug)]
-struct StreamMemoryStore<L, E = ()> {
-    operation_store: MemoryStore<L, E>,
-
-    /// Log-height of latest ack per log.
-    acked: Arc<RwLock<HashMap<(PublicKey, L), u64>>>,
-}
-
-impl<L, E> StreamMemoryStore<L, E> {
-    pub fn new(operation_store: MemoryStore<L, E>) -> Self {
-        Self {
-            operation_store,
-            acked: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-}
-
-impl<L, E> StreamControllerStore<L, E> for StreamMemoryStore<L, E>
-where
-    L: p2panda_store::LogId + Send + Sync,
-    E: p2panda_core::Extensions + Extension<L> + Send + Sync,
-{
-    type Error = StreamControllerError;
-
-    async fn ack(&self, operation_id: Hash) -> Result<(), Self::Error> {
-        let Ok(Some((header, _))) = self.operation_store.get_operation(operation_id).await else {
-            return Err(StreamControllerError::AckedUnknownOperation(operation_id));
-        };
-
-        let mut acked = self.acked.write().await;
-
-        let log_id: Option<L> = header.extension();
-        let Some(log_id) = log_id else {
-            return Err(StreamControllerError::MissingLogId(operation_id));
-        };
-
-        // Remember the "acknowledged" log-height for this log.
-        acked.insert((header.public_key, log_id), header.seq_num);
-
-        Ok(())
-    }
-
-    async fn unacked(
-        &self,
-        logs: HashMap<PublicKey, Vec<L>>,
-    ) -> Result<Vec<Operation<E>>, Self::Error> {
-        let acked = self.acked.read().await;
-
-        let mut result = Vec::new();
-        for (public_key, log_ids) in logs {
-            for log_id in log_ids {
-                match acked.get(&(public_key, log_id.clone())) {
-                    Some(ack_log_height) => {
-                        let Ok(operations) = self
-                            .operation_store
-                            // Get all operations from > ack_log_height
-                            .get_log(&public_key, &log_id, Some(*ack_log_height + 1))
-                            .await;
-
-                        if let Some(operations) = operations {
-                            for (header, body) in operations {
-                                // @TODO(adz): Getting the encoded header bytes through encoding
-                                // like this feels redundant and should be possible to retreive
-                                // just from calling "get_log".
-                                let header_bytes = header.to_bytes();
-                                result.push((header, body, header_bytes));
-                            }
-                        }
-                    }
-                    None => {
-                        let Ok(operations) = self
-                            .operation_store
-                            // Get all operations from > ack_log_height
-                            .get_log(&public_key, &log_id, Some(0))
-                            .await;
-
-                        if let Some(operations) = operations {
-                            for (header, body) in operations {
-                                // @TODO(adz): Getting the encoded header bytes through encoding
-                                // like this feels redundant and should be possible to retreive
-                                // just from calling "get_log".
-                                let header_bytes = header.to_bytes();
-                                result.push((header, body, header_bytes));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(result)
     }
 }
 

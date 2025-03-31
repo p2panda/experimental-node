@@ -13,8 +13,7 @@ use crate::{
     topic::{Topic, TopicMap},
 };
 
-pub struct NodeApi<E>
-{
+pub struct NodeApi<E> {
     pub node: Node<Topic, LogId, E>,
     pub topic_map: TopicMap,
     pub subscriptions: HashMap<[u8; 32], Topic>,
@@ -171,30 +170,26 @@ impl Serialize for ApiError {
 #[cfg(test)]
 mod tests {
     use p2panda_core::PrivateKey;
-    use p2panda_store::MemoryStore;
 
     use crate::api::NodeApi;
 
     use crate::extensions::{LogId, NodeExtensions};
     use crate::stream::{EventData, StreamEvent};
-    use crate::topic::TopicMap;
+    use crate::topic::{Topic, TopicMap};
 
     use super::Node;
 
     #[tokio::test]
     async fn subscribe_publish_persisted() {
         let private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
-        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node, mut stream_rx, _system_rx) = Node::new(
             "my_network".to_string(),
             private_key.clone(),
-            None,
-            None,
-            store,
-            blobs_root_dir,
             topic_map.clone(),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -237,17 +232,14 @@ mod tests {
     #[tokio::test]
     async fn subscribe_publish_ephemeral() {
         let node_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
-        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
-        let (node, _stream_rx, _system_rx) = Node::new(
+        let (node, _stream_rx, _system_rx) = Node::<Topic, LogId, NodeExtensions>::new(
             "my_network".to_string(),
             node_private_key.clone(),
-            None,
-            None,
-            store,
-            blobs_root_dir,
             topic_map.clone(),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -265,34 +257,28 @@ mod tests {
     #[tokio::test]
     async fn two_peers_subscribe() {
         let node_a_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
-        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
-        let (node_a, _node_a_stream_rx, _system_rx) = Node::new(
+        let (node_a, _stream_rx, _system_rx) = Node::<Topic, LogId, NodeExtensions>::new(
             "my_network".to_string(),
             node_a_private_key.clone(),
-            None,
-            None,
-            store,
-            blobs_root_dir,
             topic_map.clone(),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
         let mut node_a_api = NodeApi::new(node_a, topic_map);
 
         let node_b_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
-        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
-        let (node_b, mut node_b_stream_rx, _system_rx) = Node::new(
+        let (node_b, mut node_b_stream_rx, _system_rx) = Node::<Topic, LogId, NodeExtensions>::new(
             "my_network".to_string(),
             node_b_private_key.clone(),
-            None,
-            None,
-            store,
-            blobs_root_dir,
             topic_map.clone(),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -339,34 +325,28 @@ mod tests {
     #[tokio::test]
     async fn two_peers_sync() {
         let node_a_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
-        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node_a, mut node_a_stream_rx, _system_rx) = Node::new(
             "my_network".to_string(),
             node_a_private_key.clone(),
-            None,
-            None,
-            store,
-            blobs_root_dir,
             topic_map.clone(),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
         let mut node_a_api = NodeApi::new(node_a, topic_map);
 
         let node_b_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
-        let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node_b, mut node_b_stream_rx, _system_rx) = Node::new(
             "my_network".to_string(),
             node_b_private_key.clone(),
-            None,
-            None,
-            store,
-            blobs_root_dir,
             topic_map.clone(),
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
