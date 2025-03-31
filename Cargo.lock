@@ -958,6 +958,7 @@ dependencies = [
  "p2panda-stream",
  "p2panda-sync",
  "serde",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.12",
  "tokio",

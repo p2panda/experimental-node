@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 
 pub mod memory;
+pub mod sqlite;
 
 use p2panda_core::{Body, Hash, Header, PublicKey};
 
