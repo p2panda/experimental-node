@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use futures_util::future::{MapErr, Shared};
 use futures_util::{FutureExt, TryFutureExt};
 use iroh_io::AsyncSliceReader;
@@ -11,9 +11,10 @@ use p2panda_discovery::mdns::LocalDiscovery;
 use p2panda_net::{
     Network, NetworkBuilder, NetworkId, RelayUrl, SyncConfiguration, SystemEvent, TopicId,
 };
-use p2panda_store::{LogId, MemoryStore};
-use p2panda_sync::TopicQuery;
+use p2panda_store::sqlite::store::{connection_pool, create_database, run_pending_migrations};
+use p2panda_store::{LogId, SqliteStore};
 use p2panda_sync::log_sync::{LogSyncProtocol, TopicLogMap};
+use p2panda_sync::TopicQuery;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::pin;
@@ -30,9 +31,29 @@ use super::{
     operation::encode_gossip_message,
 };
 
+// @TODO(glyph): Can we move this into p2panda-store?
+async fn initialise_database<L, E>(url: &str) -> Result<SqliteStore<L, E>>
+where
+    L: LogId + Send + Sync + Serialize + for<'a> Deserialize<'a> + 'static,
+    E: Extensions + Extension<L> + Extension<PruneFlag> + Send + Sync + 'static,
+{
+    create_database(&url).await?;
+
+    let pool = connection_pool(&url, 1).await?;
+
+    if run_pending_migrations(&pool).await.is_err() {
+        pool.close().await;
+        panic!("Database migration failed");
+    }
+
+    let store = SqliteStore::new(pool);
+
+    Ok(store)
+}
+
 pub struct Node<T, L, E> {
     pub private_key: PrivateKey,
-    pub store: MemoryStore<L, E>,
+    pub store: SqliteStore<L, E>,
     pub network: Network<T>,
     blobs: Blobs<T, BlobsStore>,
     #[allow(dead_code)]
@@ -65,12 +86,16 @@ where
 
         let rt = tokio::runtime::Handle::current();
 
-        let store = match app_data_dir.as_ref() {
-            Some(_path) => {
-                // @TODO: load database from app data dir.
-                MemoryStore::new()
-            }
-            None => MemoryStore::new(),
+        // Instantiate the SQLite store.
+        //
+        // This takes care of creating the database if it doesn't exist, setting up a connection
+        // pool and running any pending migrations.
+        let store = if let Some(path) = app_data_dir.as_ref() {
+            let path = path.display().to_string();
+            initialise_database(&path).await?
+        } else {
+            let url = format!("sqlite://toolkitty?mode=memory&cache=private");
+            initialise_database(&url).await?
         };
 
         let (stream, stream_tx, stream_rx) = StreamController::new(store.clone());
