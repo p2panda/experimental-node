@@ -51,11 +51,10 @@ where
     pub async fn new<TM: TopicLogMap<T, L> + 'static>(
         network_name: String,
         private_key: PrivateKey,
-        bootstrap_node_id: Option<PublicKey>,
-        relay_url: Option<RelayUrl>,
-        store: MemoryStore<L, E>,
-        blobs_root_dir: PathBuf,
         topic_map: TM,
+        relay_url: Option<RelayUrl>,
+        bootstrap_node_id: Option<PublicKey>,
+        app_data_dir: Option<PathBuf>,
     ) -> Result<(
         Self,
         mpsc::Receiver<StreamEvent<E>>,
@@ -64,6 +63,14 @@ where
         let network_id: NetworkId = Hash::new(network_name).into();
 
         let rt = tokio::runtime::Handle::current();
+
+        let store = match app_data_dir.as_ref() {
+            Some(_path) => {
+                // @TODO: load database from app data dir.
+                MemoryStore::new()
+            }
+            None => MemoryStore::new(),
+        };
 
         let (stream, stream_tx, stream_rx) = StreamController::new(store.clone());
         let (ephemeral_tx, mut ephemeral_rx) = mpsc::channel(1024);
@@ -120,9 +127,15 @@ where
             network_builder = network_builder.bootstrap();
         }
 
-        let blobs_store = BlobsStore::load(blobs_root_dir).await?;
-        let (network, blobs) = Blobs::from_builder(network_builder, blobs_store).await?;
+        let blobs_store = match app_data_dir {
+            Some(app_data_dir) => BlobsStore::load(app_data_dir).await?,
+            None => {
+                let temp_dir = tempfile::tempdir()?;
+                BlobsStore::load(temp_dir.into_path()).await?
+            }
+        };
 
+        let (network, blobs) = Blobs::from_builder(network_builder, blobs_store).await?;
         let system_events_rx = network.events().await?;
 
         let (network_actor_tx, network_actor_rx) = mpsc::channel(64);
