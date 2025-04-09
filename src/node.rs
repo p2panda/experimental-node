@@ -108,6 +108,10 @@ where
             .sync(sync_config)
             .private_key(private_key.clone());
 
+        if let Some(url) = relay_url.clone() {
+            network_builder = network_builder.relay(url, false, 0);
+        }
+
         if let Some(bootstrap_node_id) = bootstrap_node_id {
             debug!(
                 "P2Panda: Direct address provided for peer: {}",
