@@ -12,17 +12,13 @@ async-trait = "0.1.85"
 futures-util = "0.3.31"
 iroh-io = "0.6.2"
 mime = "0.3.17"
-p2panda-blobs = "0.3.1"
-p2panda-core = "0.3.1"
-p2panda-net = "0.3.1"
-p2panda-store = "0.3.1"
-p2panda-stream = "0.3.1"
-p2panda-discovery = { version = "0.3.1", features = [
-    "mdns",
-] }
-p2panda-sync = { version = "0.3.1", features = [
-    "log-sync",
-] }
+p2panda-blobs = "0.4.0"
+p2panda-core = "0.4.0"
+p2panda-net = "0.4.0"
+p2panda-store = "0.4.0"
+p2panda-stream = "0.4.0"
+p2panda-discovery = { version = "0.4.0", features = ["mdns"] }
+p2panda-sync = { version = "0.4.0", features = ["log-sync"] }
 serde = { version = "1", features = ["derive"] }
 tempfile = "3.17.1"
 thiserror = "2.0.9"
