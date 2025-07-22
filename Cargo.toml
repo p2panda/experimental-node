@@ -15,7 +15,7 @@ mime = "0.3.17"
 p2panda-blobs = "0.4.0"
 p2panda-core = "0.4.0"
 p2panda-net = "0.4.0"
-p2panda-store = "0.4.0"
+p2panda-store = { version = "0.4.0", features = ["sqlite"] }
 p2panda-stream = "0.4.0"
 p2panda-discovery = { version = "0.4.0", features = ["mdns"] }
 p2panda-sync = { version = "0.4.0", features = ["log-sync"] }
@@ -28,6 +28,7 @@ tokio-util = "0.7.13"
 tokio-utils = "0.1.2"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+sqlx = { version = "0.8.6", features = ["sqlite"] }
 
 [dev-dependencies]
 tempfile = "3.17.1"

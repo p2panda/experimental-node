@@ -13,8 +13,7 @@ use crate::{
     topic::{Topic, TopicMap},
 };
 
-pub struct NodeApi<E>
-{
+pub struct NodeApi<E> {
     pub node: Node<Topic, LogId, E>,
     pub topic_map: TopicMap,
     pub subscriptions: HashMap<[u8; 32], Topic>,
@@ -171,7 +170,8 @@ impl Serialize for ApiError {
 #[cfg(test)]
 mod tests {
     use p2panda_core::PrivateKey;
-    use p2panda_store::MemoryStore;
+    use p2panda_store::SqliteStore;
+    use sqlx::SqlitePool;
 
     use crate::api::NodeApi;
 
@@ -184,7 +184,10 @@ mod tests {
     #[tokio::test]
     async fn subscribe_publish_persisted() {
         let private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("Failed to create database pool");
+        let store = SqliteStore::<LogId, NodeExtensions>::new(pool);
         let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node, mut stream_rx, _system_rx) = Node::new(
@@ -237,7 +240,10 @@ mod tests {
     #[tokio::test]
     async fn subscribe_publish_ephemeral() {
         let node_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("Failed to create database pool");
+        let store = SqliteStore::<LogId, NodeExtensions>::new(pool);
         let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node, _stream_rx, _system_rx) = Node::new(
@@ -265,7 +271,10 @@ mod tests {
     #[tokio::test]
     async fn two_peers_subscribe() {
         let node_a_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("Failed to create database pool");
+        let store = SqliteStore::<LogId, NodeExtensions>::new(pool);
         let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node_a, _node_a_stream_rx, _system_rx) = Node::new(
@@ -282,7 +291,10 @@ mod tests {
         let mut node_a_api = NodeApi::new(node_a, topic_map);
 
         let node_b_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("Failed to create database pool");
+        let store = SqliteStore::<LogId, NodeExtensions>::new(pool);
         let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node_b, mut node_b_stream_rx, _system_rx) = Node::new(
@@ -339,7 +351,10 @@ mod tests {
     #[tokio::test]
     async fn two_peers_sync() {
         let node_a_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("Failed to create database pool");
+        let store = SqliteStore::<LogId, NodeExtensions>::new(pool);
         let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node_a, mut node_a_stream_rx, _system_rx) = Node::new(
@@ -356,7 +371,10 @@ mod tests {
         let mut node_a_api = NodeApi::new(node_a, topic_map);
 
         let node_b_private_key = PrivateKey::new();
-        let store = MemoryStore::<LogId, NodeExtensions>::new();
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("Failed to create database pool");
+        let store = SqliteStore::<LogId, NodeExtensions>::new(pool);
         let blobs_root_dir = tempfile::tempdir().unwrap().into_path();
         let topic_map = TopicMap::new();
         let (node_b, mut node_b_stream_rx, _system_rx) = Node::new(

@@ -2,10 +2,10 @@ use std::time::SystemTime;
 
 use p2panda_core::cbor::{DecodeError, EncodeError, decode_cbor, encode_cbor};
 use p2panda_core::{Body, Extensions, Header, PrivateKey};
-use p2panda_store::{LocalLogStore, LogId, MemoryStore};
+use p2panda_store::{LocalLogStore, LogId, SqliteStore};
 
 pub async fn create_operation<L, E>(
-    store: &mut MemoryStore<L, E>,
+    store: &mut SqliteStore<L, E>,
     private_key: &PrivateKey,
     log_id: Option<&L>,
     extensions: Option<E>,
@@ -25,10 +25,11 @@ where
 
     let (seq_num, backlink) = match log_id {
         Some(log_id) => {
-            let Ok(latest_operation) = store.latest_operation(&public_key, log_id).await;
+            let latest_operation = store.latest_operation(&public_key, log_id).await;
             match latest_operation {
-                Some((header, _)) => (header.seq_num + 1, Some(header.hash())),
-                None => (0, None),
+                Ok(Some((header, _))) => (header.seq_num + 1, Some(header.hash())),
+                Ok(None) => (0, None),
+                Err(_) => (0, None),
             }
         }
         None => (0, None),

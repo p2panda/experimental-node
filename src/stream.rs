@@ -3,7 +3,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use p2panda_core::{Body, Extension, Extensions, Hash, Header, PruneFlag, PublicKey};
-use p2panda_store::{LogStore, MemoryStore, OperationStore};
+use p2panda_store::{LogStore, OperationStore, SqliteStore};
 use p2panda_stream::IngestExt;
 use serde::Serialize;
 use thiserror::Error;
@@ -37,8 +37,8 @@ pub enum ToStreamController<L, E> {
 
 #[allow(dead_code)]
 pub struct StreamController<L, E> {
-    controller_store: StreamMemoryStore<L, E>,
-    operation_store: MemoryStore<L, E>,
+    controller_store: StreamSqliteStore<L, E>,
+    operation_store: SqliteStore<L, E>,
     processor_handle: JoinHandle<()>,
 }
 
@@ -53,10 +53,10 @@ where
     L: p2panda_store::LogId + Send + Sync + 'static,
     E: Extensions + Extension<L> + Extension<PruneFlag> + Send + Sync + 'static,
 {
-    pub fn new(operation_store: MemoryStore<L, E>) -> StreamReturn<L, E> {
+    pub fn new(operation_store: SqliteStore<L, E>) -> StreamReturn<L, E> {
         let rt = tokio::runtime::Handle::current();
 
-        let controller_store = StreamMemoryStore::new(operation_store.clone());
+        let controller_store = StreamSqliteStore::new(operation_store.clone());
 
         let (app_tx, app_rx) = mpsc::channel(1024);
 
@@ -274,15 +274,15 @@ where
 }
 
 #[derive(Clone, Debug)]
-struct StreamMemoryStore<L, E = ()> {
-    operation_store: MemoryStore<L, E>,
+struct StreamSqliteStore<L, E = ()> {
+    operation_store: SqliteStore<L, E>,
 
     /// Log-height of latest ack per log.
     acked: Arc<RwLock<HashMap<(PublicKey, L), u64>>>,
 }
 
-impl<L, E> StreamMemoryStore<L, E> {
-    pub fn new(operation_store: MemoryStore<L, E>) -> Self {
+impl<L, E> StreamSqliteStore<L, E> {
+    pub fn new(operation_store: SqliteStore<L, E>) -> Self {
         Self {
             operation_store,
             acked: Arc::new(RwLock::new(HashMap::new())),
@@ -290,7 +290,7 @@ impl<L, E> StreamMemoryStore<L, E> {
     }
 }
 
-impl<L, E> StreamControllerStore<L, E> for StreamMemoryStore<L, E>
+impl<L, E> StreamControllerStore<L, E> for StreamSqliteStore<L, E>
 where
     L: p2panda_store::LogId + Send + Sync,
     E: p2panda_core::Extensions + Extension<L> + Send + Sync,
@@ -326,36 +326,39 @@ where
             for log_id in log_ids {
                 match acked.get(&(public_key, log_id.clone())) {
                     Some(ack_log_height) => {
-                        let Ok(operations) = self
+                        if let Ok(operations) = self
                             .operation_store
                             // Get all operations from > ack_log_height
                             .get_log(&public_key, &log_id, Some(*ack_log_height + 1))
-                            .await;
-
-                        if let Some(operations) = operations {
-                            for (header, body) in operations {
-                                // @TODO(adz): Getting the encoded header bytes through encoding
-                                // like this feels redundant and should be possible to retreive
-                                // just from calling "get_log".
-                                let header_bytes = header.to_bytes();
-                                result.push((header, body, header_bytes));
+                            .await
+                        {
+                            // If we got some operations, add them to the result.
+                            if let Some(operations) = operations {
+                                for (header, body) in operations {
+                                    // @TODO(adz): Getting the encoded header bytes through encoding
+                                    // like this feels redundant and should be possible to retreive
+                                    // just from calling "get_log".
+                                    let header_bytes = header.to_bytes();
+                                    result.push((header, body, header_bytes));
+                                }
                             }
                         }
                     }
                     None => {
-                        let Ok(operations) = self
+                        if let Ok(operations) = self
                             .operation_store
                             // Get all operations from > ack_log_height
                             .get_log(&public_key, &log_id, Some(0))
-                            .await;
-
-                        if let Some(operations) = operations {
-                            for (header, body) in operations {
-                                // @TODO(adz): Getting the encoded header bytes through encoding
-                                // like this feels redundant and should be possible to retreive
-                                // just from calling "get_log".
-                                let header_bytes = header.to_bytes();
-                                result.push((header, body, header_bytes));
+                            .await
+                        {
+                            if let Some(operations) = operations {
+                                for (header, body) in operations {
+                                    // @TODO(adz): Getting the encoded header bytes through encoding
+                                    // like this feels redundant and should be possible to retreive
+                                    // just from calling "get_log".
+                                    let header_bytes = header.to_bytes();
+                                    result.push((header, body, header_bytes));
+                                }
                             }
                         }
                     }

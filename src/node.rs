@@ -11,7 +11,7 @@ use p2panda_discovery::mdns::LocalDiscovery;
 use p2panda_net::{
     Network, NetworkBuilder, NetworkId, RelayUrl, SyncConfiguration, SystemEvent, TopicId,
 };
-use p2panda_store::{LogId, MemoryStore};
+use p2panda_store::{LogId, SqliteStore};
 use p2panda_sync::TopicQuery;
 use p2panda_sync::log_sync::{LogSyncProtocol, TopicLogMap};
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,7 @@ use super::{
 
 pub struct Node<T, L, E> {
     pub private_key: PrivateKey,
-    pub store: MemoryStore<L, E>,
+    pub store: SqliteStore<L, E>,
     pub network: Network<T>,
     blobs: Blobs<T, BlobsStore>,
     #[allow(dead_code)]
@@ -53,7 +53,7 @@ where
         private_key: PrivateKey,
         bootstrap_node_id: Option<PublicKey>,
         relay_url: Option<RelayUrl>,
-        store: MemoryStore<L, E>,
+        store: SqliteStore<L, E>,
         blobs_root_dir: PathBuf,
         topic_map: TM,
     ) -> Result<(
