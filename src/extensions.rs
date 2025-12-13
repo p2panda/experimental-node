@@ -21,20 +21,16 @@ pub struct NodeExtensions {
 
 impl Extension<LogId> for NodeExtensions {
     fn extract(header: &Header<Self>) -> Option<LogId> {
-        if let Some(extensions) = header.extensions.as_ref() {
-            if let Some(ref log_id) = extensions.log_id {
-                return Some(log_id.to_owned());
-            }
-        };
+        if let Some(ref log_id) = header.extensions.log_id {
+            return Some(log_id.to_owned());
+        }
+
         Some(LogId(header.public_key.to_hex()))
     }
 }
 
 impl Extension<PruneFlag> for NodeExtensions {
     fn extract(header: &Header<Self>) -> Option<PruneFlag> {
-        header
-            .extensions
-            .as_ref()
-            .map(|extensions| extensions.prune_flag.clone())
+        Some(header.extensions.prune_flag.clone())
     }
 }

@@ -12,13 +12,13 @@ async-trait = "0.1.85"
 futures-util = "0.3.31"
 iroh-io = "0.6.2"
 mime = "0.3.17"
-p2panda-blobs = "0.4.0"
-p2panda-core = "0.4.0"
-p2panda-net = "0.4.0"
-p2panda-store = { version = "0.4.0", features = ["sqlite"] }
-p2panda-stream = "0.4.0"
-p2panda-discovery = { version = "0.4.0", features = ["mdns"] }
-p2panda-sync = { version = "0.4.0", features = ["log-sync"] }
+p2panda-blobs = { git = "https://github.com/p2panda/p2panda.git", rev="5425873f747ea6751217193471e3f45a2b12e8b8" }
+p2panda-core = { git = "https://github.com/p2panda/p2panda.git", rev="5425873f747ea6751217193471e3f45a2b12e8b8" }
+p2panda-net = { git = "https://github.com/p2panda/p2panda.git", rev="5425873f747ea6751217193471e3f45a2b12e8b8" }
+p2panda-store = { git = "https://github.com/p2panda/p2panda.git", rev="5425873f747ea6751217193471e3f45a2b12e8b8", features = ["sqlite"] }
+p2panda-stream = { git = "https://github.com/p2panda/p2panda.git", rev="5425873f747ea6751217193471e3f45a2b12e8b8" }
+p2panda-discovery = { git = "https://github.com/p2panda/p2panda.git", rev="5425873f747ea6751217193471e3f45a2b12e8b8", features = ["mdns"] }
+p2panda-sync = { git = "https://github.com/p2panda/p2panda.git", rev="5425873f747ea6751217193471e3f45a2b12e8b8", features = ["log-sync"] }
 serde = { version = "1", features = ["derive"] }
 tempfile = "3.17.1"
 thiserror = "2.0.9"

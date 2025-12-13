@@ -110,7 +110,7 @@ where
         topic: &str,
         payload: &[u8],
         log_id: Option<&str>,
-        extensions: Option<E>,
+        extensions: E,
     ) -> Result<Hash, ApiError> {
         let private_key = self.node.private_key.clone();
 
@@ -215,7 +215,7 @@ mod tests {
                 &topic,
                 &payload,
                 Some(&private_key.public_key().to_hex()),
-                Some(extensions),
+                extensions,
             )
             .await;
 
@@ -400,19 +400,14 @@ mod tests {
             ..Default::default()
         };
         let result: Result<p2panda_core::Hash, crate::api::ApiError> = node_a_api
-            .publish_persisted(
-                &topic,
-                &node_a_payload,
-                Some(&log_id),
-                Some(extensions.clone()),
-            )
+            .publish_persisted(&topic, &node_a_payload, Some(&log_id), extensions.clone())
             .await;
         assert!(result.is_ok());
 
         // Peer B publishes it's own message to the topic.
         let node_b_payload = [5, 6, 7, 8];
         let result = node_b_api
-            .publish_persisted(&topic, &node_b_payload, Some(&log_id), Some(extensions))
+            .publish_persisted(&topic, &node_b_payload, Some(&log_id), extensions)
             .await;
         assert!(result.is_ok());
 

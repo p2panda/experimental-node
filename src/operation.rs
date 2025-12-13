@@ -2,13 +2,13 @@ use std::time::SystemTime;
 
 use p2panda_core::cbor::{DecodeError, EncodeError, decode_cbor, encode_cbor};
 use p2panda_core::{Body, Extensions, Header, PrivateKey};
-use p2panda_store::{LocalLogStore, LogId, SqliteStore};
+use p2panda_store::{LogId, SqliteStore, operations::LocalLogStore};
 
 pub async fn create_operation<L, E>(
     store: &mut SqliteStore<L, E>,
     private_key: &PrivateKey,
     log_id: Option<&L>,
-    extensions: Option<E>,
+    extensions: E,
     body: Option<&[u8]>,
 ) -> (Header<E>, Option<Body>)
 where
